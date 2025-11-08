@@ -1,0 +1,152 @@
+---
+# ClusterIP Service - Internal service discovery
+# Used by other pods within the cluster to communicate with myapp
+apiVersion: v1
+kind: Service
+metadata:
+  name: myapp
+  namespace: production
+  labels:
+    app: myapp
+    tier: frontend
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+spec:
+  type: ClusterIP
+  
+  # Session affinity for stateful connections (optional)
+  sessionAffinity: None
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800  # 3 hours
+  
+  # IP family configuration (IPv4 + IPv6 dual-stack ready)
+  ipFamilyPolicy: PreferDualStack
+  ipFamilies:
+  - IPv4
+  
+  ports:
+  - name: http
+    port: 80
+    targetPort: http
+    protocol: TCP
+  - name: metrics
+    port: 9090
+    targetPort: metrics
+    protocol: TCP
+  
+  selector:
+    app: myapp
+    version: v1.0.0
+
+---
+# Headless Service - For StatefulSet or direct pod discovery
+# Useful for service mesh or custom load balancing
+apiVersion: v1
+kind: Service
+metadata:
+  name: myapp-headless
+  namespace: production
+  labels:
+    app: myapp
+    service-type: headless
+spec:
+  type: ClusterIP
+  clusterIP: None  # Headless service
+  publishNotReadyAddresses: false
+  
+  ports:
+  - name: http
+    port: 8080
+    targetPort: http
+    protocol: TCP
+  
+  selector:
+    app: myapp
+
+---
+# LoadBalancer Service - External access (cloud provider LB)
+# For AWS: Network Load Balancer with cross-zone load balancing
+apiVersion: v1
+kind: Service
+metadata:
+  name: myapp-external
+  namespace: production
+  labels:
+    app: myapp
+    tier: frontend
+  annotations:
+    # AWS Load Balancer Controller annotations
+    service.beta.kubernetes.io/aws-load-balancer-type: "external"
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+    service.beta.kubernetes.io/aws-load-balancer-backend-protocol: "tcp"
+    service.beta.kubernetes.io/aws-load-balancer-healthcheck-path: "/health/ready"
+    service.beta.kubernetes.io/aws-load-balancer-healthcheck-interval: "10"
+    service.beta.kubernetes.io/aws-load-balancer-healthcheck-timeout: "5"
+    service.beta.kubernetes.io/aws-load-balancer-healthy-threshold: "2"
+    service.beta.kubernetes.io/aws-load-balancer-unhealthy-threshold: "2"
+    
+    # Connection draining
+    service.beta.kubernetes.io/aws-load-balancer-connection-draining-enabled: "true"
+    service.beta.kubernetes.io/aws-load-balancer-connection-draining-timeout: "60"
+    
+    # Access logs (optional)
+    service.beta.kubernetes.io/aws-load-balancer-access-log-enabled: "true"
+    service.beta.kubernetes.io/aws-load-balancer-access-log-s3-bucket-name: "my-lb-logs"
+    
+    # Tags for cost allocation
+    service.beta.kubernetes.io/aws-load-balancer-additional-resource-tags: "Environment=production,Team=platform"
+spec:
+  type: LoadBalancer
+  
+  # External traffic policy for preserving client IP
+  externalTrafficPolicy: Local  # Better for observability, may cause imbalance
+  
+  # Load balancer source ranges (IP whitelist)
+  loadBalancerSourceRanges:
+  - 0.0.0.0/0  # Open to internet - restrict in production
+  
+  ports:
+  - name: http
+    port: 80
+    targetPort: http
+    protocol: TCP
+  - name: https
+    port: 443
+    targetPort: http  # SSL termination at LB
+    protocol: TCP
+  
+  selector:
+    app: myapp
+    version: v1.0.0
+  
+  # Health check node port (for externalTrafficPolicy: Local)
+  healthCheckNodePort: 30123
+
+---
+# NodePort Service - For hybrid/on-prem clusters
+# Exposes service on each node's IP at a static port
+apiVersion: v1
+kind: Service
+metadata:
+  name: myapp-nodeport
+  namespace: production
+  labels:
+    app: myapp
+spec:
+  type: NodePort
+  
+  ports:
+  - name: http
+    port: 80
+    targetPort: http
+    nodePort: 30080  # Fixed port (30000-32767 range)
+    protocol: TCP
+  
+  selector:
+    app: myapp
+

@@ -1,0 +1,498 @@
+---
+# AWS EKS Spot Node Group Configuration
+#
+# This configuration creates a node group using EC2 Spot Instances
+# Spot instances can save up to 90% compared to On-Demand prices
+#
+# Use for:
+# - Stateless applications
+# - Batch processing jobs
+# - Development/testing environments
+# - Horizontally scalable workloads
+#
+# Spot Instance Strategy:
+# - Capacity-optimized: AWS selects instance types from pools with optimal capacity
+# - Multiple instance types: Increases availability and reduces interruption
+# - Diversification across AZs: Spread risk
+
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: my-cluster
+  region: us-east-1
+  version: "1.28"
+
+# Managed Node Groups
+managedNodeGroups:
+  # Spot Node Group - Cost-optimized workers
+  - name: spot-workers
+    # Use multiple instance types for better spot availability
+    instanceTypes:
+      - t3a.large      # 2 vCPU, 8 GB RAM - General purpose
+      - t3a.xlarge     # 4 vCPU, 16 GB RAM - General purpose
+      - t3.large       # 2 vCPU, 8 GB RAM - Intel variant
+      - t3.xlarge      # 4 vCPU, 16 GB RAM - Intel variant
+    
+    # Spot instance configuration
+    spot: true
+    instancesDistribution:
+      # Maximum price you're willing to pay (% of on-demand price)
+      # 100 = up to on-demand price (recommended for capacity-optimized)
+      maxPrice: 0.50  # $0.50/hour maximum
+      
+      # Number of on-demand instances (0 for pure spot)
+      onDemandBaseCapacity: 0
+      onDemandPercentageAboveBaseCapacity: 0
+      
+      # Spot allocation strategy
+      spotAllocationStrategy: capacity-optimized  # or lowest-price, diversified
+      
+      # Number of spot pools to use (only for lowest-price strategy)
+      spotInstancePools: 4
+    
+    # Scaling configuration
+    minSize: 3      # Minimum nodes for HA across 3 AZs
+    maxSize: 30     # Maximum nodes
+    desiredCapacity: 5
+    
+    # Volume configuration
+    volumeSize: 100  # GB
+    volumeType: gp3
+    volumeEncrypted: true
+    
+    # SSH access (optional, for debugging)
+    ssh:
+      allow: false  # Disable SSH for security
+      # publicKeyName: my-key  # Enable if needed
+    
+    # Labels - Used for pod scheduling
+    labels:
+      node-lifecycle: spot
+      workload-type: general
+      cost-optimized: "true"
+    
+    # Taints - Prevent non-spot-tolerant pods from scheduling
+    taints:
+      - key: spot
+        value: "true"
+        effect: NoSchedule
+    
+    # Tags for cost allocation
+    tags:
+      Environment: production
+      ManagedBy: eksctl
+      NodeType: spot
+      CostCenter: engineering
+      AutoScaling: "true"
+    
+    # IAM policies
+    iam:
+      withAddonPolicies:
+        autoScaler: true           # Cluster Autoscaler
+        ebs: true                  # EBS CSI driver
+        efs: true                  # EFS CSI driver
+        albIngress: true           # ALB Ingress Controller
+        cloudWatch: true           # CloudWatch Logs
+        externalDNS: true          # External DNS
+    
+    # Instance metadata options
+    instanceMetadataOptions:
+      httpPutResponseHopLimit: 2
+      httpTokens: required  # IMDSv2 only
+
+---
+# Spot Node Group - Compute-Optimized (for CPU-intensive workloads)
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: my-cluster
+  region: us-east-1
+
+managedNodeGroups:
+  - name: spot-compute-optimized
+    instanceTypes:
+      - c6a.large     # 2 vCPU, 4 GB RAM - AMD
+      - c6a.xlarge    # 4 vCPU, 8 GB RAM
+      - c6a.2xlarge   # 8 vCPU, 16 GB RAM
+      - c5a.large     # 2 vCPU, 4 GB RAM - Previous gen AMD
+      - c5a.xlarge    # 4 vCPU, 8 GB RAM
+    
+    spot: true
+    instancesDistribution:
+      maxPrice: 0.30
+      onDemandBaseCapacity: 0
+      onDemandPercentageAboveBaseCapacity: 0
+      spotAllocationStrategy: capacity-optimized
+    
+    minSize: 2
+    maxSize: 20
+    desiredCapacity: 3
+    
+    volumeSize: 80
+    volumeType: gp3
+    
+    labels:
+      node-lifecycle: spot
+      workload-type: compute-intensive
+      instance-category: compute-optimized
+    
+    taints:
+      - key: spot
+        value: "true"
+        effect: NoSchedule
+      - key: compute-intensive
+        value: "true"
+        effect: NoSchedule
+    
+    tags:
+      Environment: production
+      NodeType: spot-compute
+      Workload: cpu-intensive
+
+---
+# Spot Node Group - Memory-Optimized (for memory-intensive workloads)
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: my-cluster
+  region: us-east-1
+
+managedNodeGroups:
+  - name: spot-memory-optimized
+    instanceTypes:
+      - r6a.large     # 2 vCPU, 16 GB RAM
+      - r6a.xlarge    # 4 vCPU, 32 GB RAM
+      - r5a.large     # 2 vCPU, 16 GB RAM
+      - r5a.xlarge    # 4 vCPU, 32 GB RAM
+    
+    spot: true
+    instancesDistribution:
+      maxPrice: 0.40
+      onDemandBaseCapacity: 0
+      onDemandPercentageAboveBaseCapacity: 0
+      spotAllocationStrategy: capacity-optimized
+    
+    minSize: 2
+    maxSize: 15
+    desiredCapacity: 3
+    
+    volumeSize: 100
+    volumeType: gp3
+    
+    labels:
+      node-lifecycle: spot
+      workload-type: memory-intensive
+      instance-category: memory-optimized
+    
+    taints:
+      - key: spot
+        value: "true"
+        effect: NoSchedule
+      - key: memory-intensive
+        value: "true"
+        effect: NoSchedule
+    
+    tags:
+      Environment: production
+      NodeType: spot-memory
+      Workload: memory-intensive
+
+---
+# Spot Node Group - Batch Processing (scale-to-zero capable)
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: my-cluster
+  region: us-east-1
+
+managedNodeGroups:
+  - name: spot-batch
+    instanceTypes:
+      - c6a.2xlarge   # 8 vCPU, 16 GB RAM
+      - c6a.4xlarge   # 16 vCPU, 32 GB RAM
+      - c5a.2xlarge
+      - c5a.4xlarge
+    
+    spot: true
+    instancesDistribution:
+      maxPrice: 0.60
+      onDemandBaseCapacity: 0
+      onDemandPercentageAboveBaseCapacity: 0
+      spotAllocationStrategy: capacity-optimized
+    
+    minSize: 0       # Can scale to zero
+    maxSize: 50      # Large burst capacity
+    desiredCapacity: 0
+    
+    volumeSize: 100
+    volumeType: gp3
+    
+    labels:
+      node-lifecycle: spot
+      workload-type: batch
+      scale-to-zero: "true"
+    
+    taints:
+      - key: spot
+        value: "true"
+        effect: NoSchedule
+      - key: batch
+        value: "true"
+        effect: NoSchedule
+    
+    tags:
+      Environment: production
+      NodeType: spot-batch
+      Workload: batch-processing
+      AutoScaling: "aggressive"
+
+---
+# ConfigMap - Spot Instance Strategy Guide
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spot-instance-guide
+  namespace: kube-system
+data:
+  guide.md: |
+    # Spot Instance Strategy Guide
+    
+    ## Instance Type Selection
+    
+    ### Diversification Strategy
+    More instance types = Better spot availability
+    
+    **Good (Single family, multiple sizes)**:
+    ```yaml
+    instanceTypes:
+      - t3.large
+      - t3.xlarge
+      - t3.2xlarge
+    ```
+    
+    **Better (Multiple families)**:
+    ```yaml
+    instanceTypes:
+      - t3.large
+      - t3a.large   # AMD variant
+      - t2.large    # Previous generation
+    ```
+    
+    **Best (Cross-family diversification)**:
+    ```yaml
+    instanceTypes:
+      - t3.large    # General purpose
+      - t3a.large   # AMD variant
+      - c5.large    # Compute optimized (similar specs)
+      - m5.large    # General purpose (similar specs)
+    ```
+    
+    ## Spot Allocation Strategies
+    
+    ### capacity-optimized (Recommended)
+    - AWS selects from pools with optimal capacity
+    - Reduces interruption rate
+    - Best for production workloads
+    
+    ```yaml
+    spotAllocationStrategy: capacity-optimized
+    ```
+    
+    ### lowest-price
+    - Selects cheapest spot pools
+    - Higher interruption risk
+    - Good for cost-sensitive batch jobs
+    
+    ```yaml
+    spotAllocationStrategy: lowest-price
+    spotInstancePools: 4  # Use 4 cheapest pools
+    ```
+    
+    ### price-capacity-optimized (Newer, if available)
+    - Balance between price and capacity
+    - Best of both worlds
+    
+    ## Handling Spot Interruptions
+    
+    ### 1. AWS Node Termination Handler
+    Drains nodes gracefully before spot termination
+    
+    ```bash
+    # Install via Helm
+    helm repo add eks https://aws.github.io/eks-charts
+    helm install aws-node-termination-handler \
+      eks/aws-node-termination-handler \
+      --namespace kube-system \
+      --set enableSpotInterruptionDraining=true \
+      --set enableScheduledEventDraining=true
+    ```
+    
+    ### 2. Pod Disruption Budgets
+    Ensures minimum availability during node drains
+    
+    ```yaml
+    apiVersion: policy/v1
+    kind: PodDisruptionBudget
+    metadata:
+      name: myapp-pdb
+    spec:
+      minAvailable: 2
+      selector:
+        matchLabels:
+          app: myapp
+    ```
+    
+    ### 3. Graceful Shutdown
+    Handle SIGTERM in application
+    
+    ```yaml
+    # Deployment
+    spec:
+      terminationGracePeriodSeconds: 120  # 2 minutes
+    ```
+    
+    ## Cost Savings Calculation
+    
+    ### Example 1: t3.large
+    - On-Demand: $0.0832/hour
+    - Spot: ~$0.0250/hour (70% savings)
+    - Monthly savings per instance: $42
+    - 10 instances: $420/month saved
+    
+    ### Example 2: c5.2xlarge
+    - On-Demand: $0.34/hour
+    - Spot: ~$0.102/hour (70% savings)
+    - Monthly savings per instance: $171
+    - 20 instances: $3,420/month saved
+    
+    ## Node Taints & Tolerations
+    
+    ### Taint Spot Nodes
+    Prevents accidental scheduling of critical workloads
+    
+    ```yaml
+    # Node taint (in node group config)
+    taints:
+      - key: spot
+        value: "true"
+        effect: NoSchedule
+    ```
+    
+    ### Tolerate in Deployment
+    Only pods with toleration can schedule on spot
+    
+    ```yaml
+    # Deployment
+    spec:
+      template:
+        spec:
+          tolerations:
+          - key: spot
+            operator: Equal
+            value: "true"
+            effect: NoSchedule
+    ```
+    
+    ## Mixed On-Demand + Spot Strategy
+    
+    ### Pattern 1: Baseline On-Demand, Burst Spot
+    ```yaml
+    # On-demand node group
+    minSize: 5
+    maxSize: 10
+    
+    # Spot node group
+    minSize: 0
+    maxSize: 50  # Large burst capacity
+    ```
+    
+    ### Pattern 2: Mixed Fleet
+    ```yaml
+    instancesDistribution:
+      onDemandBaseCapacity: 2        # Always 2 on-demand
+      onDemandPercentageAboveBaseCapacity: 20  # 20% on-demand, 80% spot
+    ```
+    
+    ## Cluster Autoscaler Configuration
+    
+    ### Prefer Spot Nodes
+    ```yaml
+    # Cluster Autoscaler deployment
+    args:
+    - --expander=priority
+    - --balance-similar-node-groups=true
+    - --skip-nodes-with-system-pods=false
+    ```
+    
+    ### Priority Expander Config
+    ```yaml
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: cluster-autoscaler-priority-expander
+      namespace: kube-system
+    data:
+      priorities: |
+        10:
+          - .*spot.*      # Prefer spot nodes
+        1:
+          - .*on-demand.* # Fallback to on-demand
+    ```
+    
+    ## Monitoring Spot Interruptions
+    
+    ### CloudWatch Metrics
+    ```bash
+    # View spot interruption rate
+    aws ec2 describe-spot-price-history \
+      --instance-types t3.large \
+      --start-time 2024-01-01T00:00:00 \
+      --product-descriptions "Linux/UNIX" \
+      --query 'SpotPriceHistory[*].[Timestamp,SpotPrice]' \
+      --output table
+    ```
+    
+    ### Prometheus Metrics
+    ```promql
+    # Node termination events
+    kube_node_status_condition{condition="Ready",status="false"}
+    
+    # Pods evicted due to node termination
+    kube_pod_status_reason{reason="Evicted"}
+    ```
+    
+    ## Best Practices
+    
+    1. **Use 4+ instance types**
+       - Increases spot availability
+       - Reduces interruption rate
+    
+    2. **Enable AWS Node Termination Handler**
+       - Graceful draining before termination
+       - 2-minute warning from AWS
+    
+    3. **Set appropriate PDBs**
+       - Ensure minimum replicas during interruptions
+       - Prevents service downtime
+    
+    4. **Use capacity-optimized strategy**
+       - Lower interruption rate
+       - Worth slight price premium
+    
+    5. **Monitor spot interruption rate**
+       - Set up alerts for high interruption rate
+       - May need to adjust instance types
+    
+    6. **Combine with On-Demand**
+       - Critical workloads on on-demand
+       - Burst capacity on spot
+    
+    7. **Test interruption handling**
+       - Manually drain nodes
+       - Verify graceful shutdown
+       - Check application recovery
+

@@ -1,0 +1,419 @@
+---
+# HorizontalPodAutoscaler v2 - Multi-Metric Autoscaling
+#
+# This HPA demonstrates enterprise-grade autoscaling with:
+# - CPU utilization (standard)
+# - Memory utilization (prevents OOM)
+# - Custom business metrics (requests per second)
+# - External metrics (from Datadog, New Relic, etc.)
+#
+# Scaling Behavior:
+# - Scale up: Aggressive (respond quickly to load)
+# - Scale down: Conservative (prevent flapping)
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: myapp-hpa
+  namespace: production
+  labels:
+    app: myapp
+  annotations:
+    description: "Multi-metric HPA with CPU, memory, and custom metrics"
+spec:
+  # Target deployment
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: myapp
+  
+  # Replica boundaries
+  minReplicas: 3     # Minimum for HA (across 3 AZs)
+  maxReplicas: 50    # Maximum to prevent runaway scaling
+  
+  # Scaling behavior (Kubernetes 1.23+)
+  behavior:
+    scaleDown:
+      # Conservative scale-down to prevent flapping
+      stabilizationWindowSeconds: 300  # 5 minutes
+      policies:
+      - type: Percent
+        value: 50          # Scale down max 50% of current pods
+        periodSeconds: 60  # Per minute
+      - type: Pods
+        value: 2           # Or max 2 pods
+        periodSeconds: 60  # Per minute
+      selectPolicy: Min    # Use the most conservative policy
+    
+    scaleUp:
+      # Aggressive scale-up to handle traffic spikes
+      stabilizationWindowSeconds: 0  # No stabilization (immediate)
+      policies:
+      - type: Percent
+        value: 100         # Double the pods
+        periodSeconds: 15  # Every 15 seconds
+      - type: Pods
+        value: 4           # Or add 4 pods
+        periodSeconds: 15  # Every 15 seconds
+      selectPolicy: Max    # Use the most aggressive policy
+  
+  # Metrics for autoscaling decisions
+  metrics:
+  
+  # 1. CPU Utilization - Standard metric
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70  # Scale when avg CPU > 70%
+  
+  # 2. Memory Utilization - Prevents OOM kills
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80  # Scale when avg memory > 80%
+  
+  # 3. Custom Metric - Requests per second (from Prometheus)
+  - type: Pods
+    pods:
+      metric:
+        name: http_requests_per_second
+      target:
+        type: AverageValue
+        averageValue: "1000"  # 1000 req/s per pod
+  
+  # 4. Custom Metric - Queue depth (from Prometheus)
+  - type: Pods
+    pods:
+      metric:
+        name: queue_depth
+      target:
+        type: AverageValue
+        averageValue: "50"  # Max 50 messages per pod
+  
+  # 5. Object Metric - Ingress requests (alternative)
+  - type: Object
+    object:
+      metric:
+        name: requests-per-second
+      describedObject:
+        apiVersion: networking.k8s.io/v1
+        kind: Ingress
+        name: myapp-ingress
+      target:
+        type: Value
+        value: "10k"  # 10,000 total req/s
+  
+  # 6. External Metric - From external monitoring system
+  - type: External
+    external:
+      metric:
+        name: datadog.http.requests
+        selector:
+          matchLabels:
+            service: myapp
+      target:
+        type: AverageValue
+        averageValue: "800"  # 800 req/s per pod
+
+---
+# HPA for Predictable Workloads - CPU-only (simpler)
+# Use this for workloads with predictable CPU-bound patterns
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: simple-cpu-hpa
+  namespace: production
+  labels:
+    app: simple-app
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: simple-app
+  
+  minReplicas: 2
+  maxReplicas: 10
+  
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 60
+
+---
+# HPA for Memory-Intensive Workloads
+# Use this for data processing, caching, or in-memory workloads
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: memory-intensive-hpa
+  namespace: production
+  labels:
+    app: cache-service
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: cache-service
+  
+  minReplicas: 3
+  maxReplicas: 20
+  
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 600  # 10 minutes (long stabilization)
+      policies:
+      - type: Pods
+        value: 1
+        periodSeconds: 120  # Remove 1 pod every 2 minutes
+      selectPolicy: Min
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Pods
+        value: 2
+        periodSeconds: 30
+      selectPolicy: Max
+  
+  metrics:
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 75  # Scale at 75% memory
+
+---
+# HPA with ContainerResource Metrics (Kubernetes 1.20+)
+# Use this for multi-container pods when you want to scale based on specific container
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: container-specific-hpa
+  namespace: production
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: multi-container-app
+  
+  minReplicas: 2
+  maxReplicas: 15
+  
+  metrics:
+  # Scale based on specific container's CPU
+  - type: ContainerResource
+    containerResource:
+      name: cpu
+      container: main-app  # Specific container name
+      target:
+        type: Utilization
+        averageUtilization: 70
+  
+  # Scale based on specific container's memory
+  - type: ContainerResource
+    containerResource:
+      name: memory
+      container: main-app
+      target:
+        type: Utilization
+        averageUtilization: 80
+
+---
+# HPA Strategy Guide (ConfigMap)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hpa-strategy-guide
+  namespace: production
+data:
+  guide.md: |
+    # HPA Strategy Guide
+    
+    ## Choosing Target Utilization
+    
+    ### CPU Target Guidelines
+    - **70%**: Balanced (recommended for most workloads)
+    - **50-60%**: Conservative (for spiky traffic, gives more headroom)
+    - **80-85%**: Aggressive (for cost optimization, predictable load)
+    - **40-50%**: Very conservative (for mission-critical, low-latency apps)
+    
+    ### Memory Target Guidelines
+    - **80%**: Standard (prevents OOM, some buffer)
+    - **70%**: Conservative (more headroom for memory spikes)
+    - **85%**: Aggressive (for memory-stable applications)
+    
+    **Note**: Memory scaling is slower than CPU, so scale conservatively!
+    
+    ## Scaling Behavior Patterns
+    
+    ### Pattern 1: E-commerce (Traffic Spikes)
+    ```yaml
+    behavior:
+      scaleUp:
+        stabilizationWindowSeconds: 0  # Immediate
+        policies:
+        - type: Percent
+          value: 100  # Double capacity
+      scaleDown:
+        stabilizationWindowSeconds: 600  # 10 min wait
+        policies:
+        - type: Percent
+          value: 25  # Gradual decrease
+    ```
+    
+    ### Pattern 2: Batch Processing (Stable)
+    ```yaml
+    behavior:
+      scaleUp:
+        stabilizationWindowSeconds: 60  # 1 min stabilization
+        policies:
+        - type: Pods
+          value: 2  # Add 2 at a time
+      scaleDown:
+        stabilizationWindowSeconds: 300  # 5 min wait
+        policies:
+        - type: Pods
+          value: 1  # Remove 1 at a time
+    ```
+    
+    ### Pattern 3: Real-time (Ultra-responsive)
+    ```yaml
+    behavior:
+      scaleUp:
+        stabilizationWindowSeconds: 0
+        policies:
+        - type: Pods
+          value: 10  # Burst capacity
+          periodSeconds: 15
+      scaleDown:
+        stabilizationWindowSeconds: 900  # 15 min wait
+        policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 180  # Very gradual
+    ```
+    
+    ## Metric Combination Strategies
+    
+    ### Strategy 1: CPU + Memory (Most Common)
+    ```yaml
+    metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          averageUtilization: 80
+    ```
+    **When to use**: Standard web apps, APIs
+    **Result**: Scales on whichever metric hits threshold first
+    
+    ### Strategy 2: CPU + Custom Business Metric
+    ```yaml
+    metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          averageUtilization: 70
+    - type: Pods
+      pods:
+        metric:
+          name: http_requests_per_second
+        target:
+          averageValue: "1000"
+    ```
+    **When to use**: User-facing services with clear throughput requirements
+    **Result**: Scales based on actual business metrics, not just resource usage
+    
+    ### Strategy 3: Multiple Custom Metrics
+    ```yaml
+    metrics:
+    - type: Pods
+      pods:
+        metric:
+          name: queue_depth
+        target:
+          averageValue: "50"
+    - type: Pods
+      pods:
+        metric:
+          name: processing_time_ms
+        target:
+          averageValue: "200"
+    ```
+    **When to use**: Queue workers, async processors
+    **Result**: Scales based on queue backlog and processing speed
+    
+    ## Replica Calculation Formula
+    
+    HPA calculates desired replicas using:
+    ```
+    desiredReplicas = ceil[currentReplicas * (currentMetricValue / targetMetricValue)]
+    ```
+    
+    ### Example 1: CPU Scaling
+    - Current replicas: 5
+    - Current CPU: 85%
+    - Target CPU: 70%
+    - Desired replicas = ceil[5 * (85 / 70)] = ceil[6.07] = 7
+    
+    ### Example 2: Custom Metric
+    - Current replicas: 10
+    - Current RPS per pod: 1500
+    - Target RPS per pod: 1000
+    - Desired replicas = ceil[10 * (1500 / 1000)] = 15
+    
+    ## Troubleshooting
+    
+    ### Problem: HPA not scaling
+    ```bash
+    # Check HPA status
+    kubectl describe hpa myapp-hpa -n production
+    
+    # Check metrics availability
+    kubectl get --raw /apis/metrics.k8s.io/v1beta1/pods
+    
+    # Check Metrics Server
+    kubectl top pods -n production
+    ```
+    
+    ### Problem: Flapping (constant scale up/down)
+    **Cause**: Stabilization window too short or target too sensitive
+    **Fix**: Increase `stabilizationWindowSeconds` for scale-down
+    
+    ### Problem: Slow to scale up
+    **Cause**: Conservative scale-up policies
+    **Fix**: Increase scale-up `value` or decrease `periodSeconds`
+    
+    ### Problem: Scaling on wrong metric
+    **Cause**: Multiple metrics, HPA picks max replica count
+    **Fix**: Review all metrics, adjust targets appropriately
+    
+    ## Monitoring Commands
+    
+    ```bash
+    # Watch HPA in real-time
+    kubectl get hpa -n production -w
+    
+    # View HPA events
+    kubectl describe hpa myapp-hpa -n production | grep Events -A 20
+    
+    # Check current metrics
+    kubectl get hpa myapp-hpa -n production -o yaml | grep -A 10 currentMetrics
+    
+    # View replica history
+    kubectl get events -n production --field-selector involvedObject.name=myapp
+    ```
+

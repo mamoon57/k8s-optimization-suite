@@ -1,0 +1,511 @@
+---
+# KEDA ScaledObject - AWS SQS Queue Depth
+#
+# Scales based on AWS SQS queue message count
+# Perfect for asynchronous job processing and event-driven architectures
+#
+# Use cases:
+# - Background job processing
+# - Email/notification queues
+# - Image processing pipelines
+# - Data ingestion workflows
+
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: sqs-queue-scaler
+  namespace: production
+  labels:
+    app: queue-processor
+  annotations:
+    description: "Scale based on AWS SQS queue depth"
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: queue-processor
+  
+  pollingInterval: 30  # Check SQS every 30 seconds
+  cooldownPeriod: 300  # 5 minutes cooldown
+  
+  minReplicaCount: 0   # Scale to zero when queue is empty
+  maxReplicaCount: 50  # Maximum workers
+  
+  triggers:
+  - type: aws-sqs-queue
+    metadata:
+      # AWS SQS Queue URL
+      queueURL: https://sqs.us-east-1.amazonaws.com/123456789012/my-queue
+      
+      # Queue length threshold - messages per pod
+      queueLength: "5"  # Each pod processes 5 messages
+      
+      # Activation queue length - scale from 0 to 1
+      activationQueueLength: "1"  # Scale up when 1+ messages
+      
+      # AWS Region
+      awsRegion: us-east-1
+      
+      # Identity Owner (for IRSA - IAM Roles for Service Accounts)
+      identityOwner: operator  # or "pod" for pod-based IAM
+    
+    authenticationRef:
+      name: aws-sqs-auth
+
+---
+# KEDA ScaledObject - SQS with Dead Letter Queue Monitoring
+# Monitors both main queue and DLQ
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: sqs-with-dlq-scaler
+  namespace: production
+spec:
+  scaleTargetRef:
+    name: job-processor
+  
+  minReplicaCount: 1   # Keep 1 pod for DLQ processing
+  maxReplicaCount: 30
+  
+  pollingInterval: 30
+  cooldownPeriod: 600  # 10 minutes for batch jobs
+  
+  triggers:
+  # Main queue
+  - type: aws-sqs-queue
+    metadata:
+      queueURL: https://sqs.us-east-1.amazonaws.com/123456789012/jobs-queue
+      queueLength: "10"
+      awsRegion: us-east-1
+      identityOwner: operator
+    authenticationRef:
+      name: aws-sqs-auth
+  
+  # Dead Letter Queue (separate scaler or alert)
+  # Note: Usually you don't scale on DLQ, but alert instead
+
+---
+# KEDA ScaledObject - SQS FIFO Queue
+# For First-In-First-Out message processing
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: sqs-fifo-scaler
+  namespace: production
+spec:
+  scaleTargetRef:
+    name: fifo-processor
+  
+  # FIFO queues: limit replicas to match message groups
+  minReplicaCount: 1
+  maxReplicaCount: 10  # Lower limit for FIFO
+  
+  pollingInterval: 30
+  cooldownPeriod: 180  # Shorter cooldown for FIFO
+  
+  triggers:
+  - type: aws-sqs-queue
+    metadata:
+      # FIFO queue URL (ends with .fifo)
+      queueURL: https://sqs.us-east-1.amazonaws.com/123456789012/orders.fifo
+      queueLength: "20"  # Higher per-pod count
+      awsRegion: us-east-1
+      identityOwner: operator
+    authenticationRef:
+      name: aws-sqs-auth
+
+---
+# KEDA ScaledObject - Multi-Queue Processing
+# Process multiple SQS queues with same worker pool
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: multi-queue-scaler
+  namespace: production
+spec:
+  scaleTargetRef:
+    name: multi-queue-processor
+  
+  minReplicaCount: 2
+  maxReplicaCount: 40
+  
+  triggers:
+  # High priority queue
+  - type: aws-sqs-queue
+    metadata:
+      queueURL: https://sqs.us-east-1.amazonaws.com/123456789012/high-priority
+      queueLength: "3"  # More aggressive scaling
+      awsRegion: us-east-1
+    authenticationRef:
+      name: aws-sqs-auth
+  
+  # Normal priority queue
+  - type: aws-sqs-queue
+    metadata:
+      queueURL: https://sqs.us-east-1.amazonaws.com/123456789012/normal-priority
+      queueLength: "10"
+      awsRegion: us-east-1
+    authenticationRef:
+      name: aws-sqs-auth
+  
+  # Low priority queue
+  - type: aws-sqs-queue
+    metadata:
+      queueURL: https://sqs.us-east-1.amazonaws.com/123456789012/low-priority
+      queueLength: "50"  # Less aggressive
+      awsRegion: us-east-1
+    authenticationRef:
+      name: aws-sqs-auth
+
+---
+# TriggerAuthentication - IAM Roles for Service Accounts (IRSA)
+# Recommended: Use IRSA for secure, pod-based AWS authentication
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: aws-sqs-auth
+  namespace: production
+spec:
+  # Option 1: IAM Role for Service Account (IRSA) - Recommended
+  podIdentity:
+    provider: aws-eks  # or aws-kiam for non-EKS
+    identityId: ""     # Leave empty to use pod's service account
+
+---
+# TriggerAuthentication - Static IAM Credentials (Alternative)
+# Less secure - use IRSA instead when possible
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: aws-sqs-auth-static
+  namespace: production
+spec:
+  # Option 2: Static credentials (not recommended for production)
+  secretTargetRef:
+  - parameter: awsAccessKeyID
+    name: aws-credentials
+    key: AWS_ACCESS_KEY_ID
+  - parameter: awsSecretAccessKey
+    name: aws-credentials
+    key: AWS_SECRET_ACCESS_KEY
+
+---
+# Secret - AWS Credentials (only if not using IRSA)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: aws-credentials
+  namespace: production
+type: Opaque
+stringData:
+  AWS_ACCESS_KEY_ID: "AKIAIOSFODNN7EXAMPLE"
+  AWS_SECRET_ACCESS_KEY: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+
+---
+# ServiceAccount - For IRSA
+# Annotate with IAM role ARN
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: queue-processor
+  namespace: production
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/queue-processor-role
+automountServiceAccountToken: true
+
+---
+# IAM Policy (Apply this in AWS - documentation only)
+# Required SQS permissions for KEDA scaler
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: iam-policy-sqs-keda
+  namespace: production
+data:
+  policy.json: |
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "sqs:GetQueueAttributes",
+            "sqs:GetQueueUrl",
+            "sqs:ListQueues"
+          ],
+          "Resource": [
+            "arn:aws:sqs:us-east-1:123456789012:my-queue",
+            "arn:aws:sqs:us-east-1:123456789012:my-queue-dlq"
+          ]
+        }
+      ]
+    }
+
+---
+# ConfigMap - SQS Scaler Guide
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sqs-scaler-guide
+  namespace: production
+data:
+  guide.md: |
+    # AWS SQS KEDA Scaler Guide
+    
+    ## Queue Length Calculation
+    
+    ### Formula
+    ```
+    queueLength = (target_processing_time_seconds * messages_per_second) / pod_processing_rate
+    ```
+    
+    ### Example 1: Real-time Processing
+    - Target: Process within 30 seconds
+    - Rate: 100 msg/s incoming
+    - Each pod: 10 msg/s processing
+    
+    ```
+    queueLength = (30 * 100) / 10 = 300 messages per pod
+    ```
+    
+    ```yaml
+    queueLength: "300"
+    ```
+    
+    ### Example 2: Batch Processing
+    - Target: Process within 5 minutes (300s)
+    - Rate: 50 msg/s
+    - Each pod: 5 msg/s
+    
+    ```
+    queueLength = (300 * 50) / 5 = 3000 messages per pod
+    ```
+    
+    ```yaml
+    queueLength: "3000"
+    ```
+    
+    ### Example 3: Critical/Fast Processing
+    - Target: Process within 5 seconds
+    - Rate: 200 msg/s
+    - Each pod: 20 msg/s
+    
+    ```
+    queueLength = (5 * 200) / 20 = 50 messages per pod
+    ```
+    
+    ```yaml
+    queueLength: "50"
+    ```
+    
+    ## Scaling Calculation
+    
+    KEDA calculates desired replicas:
+    ```
+    desiredReplicas = ceil(currentQueueDepth / queueLength)
+    ```
+    
+    ### Example
+    - Current queue: 500 messages
+    - queueLength: 100
+    - Desired replicas: ceil(500 / 100) = 5 pods
+    
+    ## Scale-to-Zero Strategy
+    
+    ```yaml
+    minReplicaCount: 0
+    
+    triggers:
+    - type: aws-sqs-queue
+      metadata:
+        queueLength: "10"
+        activationQueueLength: "1"  # Scale up immediately
+    ```
+    
+    **Benefits**:
+    - Zero cost when idle
+    - Automatic wake-up when messages arrive
+    
+    **Considerations**:
+    - Cold start delay (pod creation time)
+    - Use for non-time-sensitive workloads
+    
+    ## FIFO Queue Considerations
+    
+    ### Message Grouping
+    FIFO queues process message groups in order. Scaling is limited by:
+    - Number of message groups
+    - One consumer per message group
+    
+    ```yaml
+    # If you have 10 message groups
+    maxReplicaCount: 10  # Don't exceed message group count
+    ```
+    
+    ### Throughput Limits
+    - Standard FIFO: 300 TPS (with batching: 3,000 TPS)
+    - High-throughput FIFO: 9,000 TPS (90,000 with batching)
+    
+    ## Multi-Queue Priority
+    
+    ### Strategy: Separate Queues + Scalers
+    
+    ```yaml
+    # High priority - aggressive scaling
+    - queueURL: .../high-priority
+      queueLength: "5"
+    
+    # Normal priority
+    - queueURL: .../normal
+      queueLength: "20"
+    
+    # Low priority - conservative scaling
+    - queueURL: .../low-priority
+      queueLength: "100"
+    ```
+    
+    ### Strategy: Separate Deployments
+    
+    ```yaml
+    # Deployment 1: High priority queue only
+    # Deployment 2: Normal + Low priority queues
+    ```
+    
+    ## Setting Up IRSA (IAM Roles for Service Accounts)
+    
+    ### Step 1: Create IAM Policy
+    ```bash
+    aws iam create-policy \
+      --policy-name SQSKEDAScalerPolicy \
+      --policy-document file://policy.json
+    ```
+    
+    ### Step 2: Create IAM Role
+    ```bash
+    eksctl create iamserviceaccount \
+      --name queue-processor \
+      --namespace production \
+      --cluster my-cluster \
+      --attach-policy-arn arn:aws:iam::123456789012:policy/SQSKEDAScalerPolicy \
+      --approve
+    ```
+    
+    ### Step 3: Verify ServiceAccount
+    ```bash
+    kubectl describe sa queue-processor -n production
+    # Should show: eks.amazonaws.com/role-arn annotation
+    ```
+    
+    ### Step 4: Test Access
+    ```bash
+    kubectl run -it --rm aws-cli \
+      --image=amazon/aws-cli \
+      --serviceaccount=queue-processor \
+      --namespace=production \
+      -- sqs get-queue-attributes \
+      --queue-url https://sqs.us-east-1.amazonaws.com/123456789012/my-queue \
+      --attribute-names ApproximateNumberOfMessages
+    ```
+    
+    ## Monitoring SQS Queues
+    
+    ### View Queue Attributes
+    ```bash
+    aws sqs get-queue-attributes \
+      --queue-url https://sqs.us-east-1.amazonaws.com/123456789012/my-queue \
+      --attribute-names All
+    ```
+    
+    ### Key Metrics
+    - `ApproximateNumberOfMessages`: Messages available
+    - `ApproximateNumberOfMessagesNotVisible`: In-flight messages
+    - `ApproximateNumberOfMessagesDelayed`: Delayed messages
+    - `ApproximateAgeOfOldestMessage`: Oldest message age
+    
+    ### CloudWatch Metrics
+    ```bash
+    # Number of messages
+    aws cloudwatch get-metric-statistics \
+      --namespace AWS/SQS \
+      --metric-name ApproximateNumberOfMessagesVisible \
+      --dimensions Name=QueueName,Value=my-queue \
+      --start-time 2024-01-01T00:00:00Z \
+      --end-time 2024-01-01T23:59:59Z \
+      --period 300 \
+      --statistics Average
+    ```
+    
+    ## Troubleshooting
+    
+    ### Problem: Not scaling despite queue depth
+    
+    **Check KEDA logs:**
+    ```bash
+    kubectl logs -n keda deploy/keda-operator | grep sqs
+    ```
+    
+    **Check IAM permissions:**
+    ```bash
+    # Test from pod
+    kubectl exec -it queue-processor-xyz -n production -- \
+      aws sqs get-queue-attributes \
+      --queue-url https://sqs.us-east-1.amazonaws.com/123456789012/my-queue
+    ```
+    
+    **Verify ScaledObject:**
+    ```bash
+    kubectl describe scaledobject sqs-queue-scaler -n production
+    ```
+    
+    ### Problem: Scaling too aggressively
+    
+    **Increase queueLength:**
+    ```yaml
+    queueLength: "50"  # Allow more messages per pod
+    ```
+    
+    **Increase cooldownPeriod:**
+    ```yaml
+    cooldownPeriod: 600  # 10 minutes
+    ```
+    
+    ### Problem: Messages not being processed
+    
+    **Check visibility timeout:**
+    - Should be > pod processing time
+    - AWS default: 30 seconds
+    
+    ```bash
+    aws sqs set-queue-attributes \
+      --queue-url https://sqs.us-east-1.amazonaws.com/123456789012/my-queue \
+      --attributes VisibilityTimeout=300  # 5 minutes
+    ```
+    
+    ## Best Practices
+    
+    1. **Use IRSA over static credentials**
+       - More secure
+       - Automatic credential rotation
+       - Audit trail in CloudTrail
+    
+    2. **Set appropriate visibility timeout**
+       - > max processing time per message
+       - Consider pod termination grace period
+    
+    3. **Configure Dead Letter Queue**
+       - Capture failed messages
+       - Alert on DLQ depth
+       - Separate processing for failures
+    
+    4. **Monitor message age**
+       - Alert on old messages (SLA violation)
+       - May indicate processing issues
+    
+    5. **Use message attributes for priority**
+       - Route to different queues
+       - Scale differently per priority
+    
+    6. **Test scale-to-zero behavior**
+       - Verify cold start time acceptable
+       - Consider keeping min replicas for latency-sensitive workloads
+

@@ -1,0 +1,290 @@
+---
+# PriorityClasses - Workload Prioritization
+#
+# Determines which pods are scheduled first and which are evicted first
+# during resource constraints. Essential for cost optimization with spot instances.
+#
+# Priority Scale:
+# - 1,000,000,000+: System critical (kube-system, CNI, CSI)
+# - 100,000+: Production critical (databases, core APIs)
+# - 10,000+: Production high (user-facing services)
+# - 1,000+: Production standard (backend services)
+# - 100+: Development/staging
+# - 0-99: Batch jobs, non-critical workloads
+
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: system-critical
+  annotations:
+    description: "Reserved for system components (kube-system)"
+value: 2000000000
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: production-critical
+  annotations:
+    description: "Mission-critical production workloads (databases, core services)"
+value: 1000000
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: production-high
+  annotations:
+    description: "High-priority production workloads (user-facing APIs)"
+value: 100000
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: production-standard
+  annotations:
+    description: "Standard production workloads (backend services)"
+value: 10000
+globalDefault: true  # Default for pods without priorityClassName
+preemptionPolicy: PreemptLowerPriority
+
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: staging
+  annotations:
+    description: "Staging environment workloads"
+value: 1000
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: development
+  annotations:
+    description: "Development environment workloads"
+value: 500
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: batch-high
+  annotations:
+    description: "High-priority batch jobs (time-sensitive processing)"
+value: 100
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: batch-low
+  annotations:
+    description: "Low-priority batch jobs (can be preempted)"
+value: 10
+globalDefault: false
+preemptionPolicy: Never  # Don't preempt other pods
+
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: spot-tolerant
+  annotations:
+    description: "Workloads that can run on spot instances and tolerate interruptions"
+value: 50
+globalDefault: false
+preemptionPolicy: Never
+
+---
+# ConfigMap - Priority Class Strategy Guide
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: priority-class-guide
+  namespace: kube-system
+data:
+  guide.md: |
+    # PriorityClass Strategy Guide
+    
+    ## Decision Matrix
+    
+    | Workload Type | Priority Class | Spot? | Reason |
+    |---------------|----------------|-------|--------|
+    | Control Plane | system-critical | No | Essential cluster operations |
+    | Database (prod) | production-critical | No | Stateful, data integrity |
+    | Payment API | production-critical | No | Financial transactions |
+    | Auth Service | production-critical | No | Security, always available |
+    | Web Frontend | production-high | Mixed | User-facing, HA with PDB |
+    | REST API | production-high | Mixed | User-facing, can tolerate brief interruption |
+    | Backend Worker | production-standard | Mixed | Can restart, idempotent |
+    | Caching Layer | production-standard | Mixed | Can rebuild cache |
+    | Logging Agent | production-standard | Mixed | Non-critical sidecar |
+    | Staging Apps | staging | Yes | Non-production |
+    | Dev Apps | development | Yes | Non-production |
+    | Report Generation | batch-high | Yes | Time-sensitive but retriable |
+    | Data Cleanup | batch-low | Yes | Not time-sensitive |
+    | ML Training | batch-low | Yes | Long-running, checkpoints |
+    
+    ## Priority Class + Node Affinity Strategy
+    
+    ### Pattern 1: Critical on On-Demand Only
+    ```yaml
+    priorityClassName: production-critical
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+          - matchExpressions:
+            - key: node-lifecycle
+              operator: In
+              values:
+              - on-demand
+    ```
+    
+    ### Pattern 2: High Priority on On-Demand, Failover to Spot
+    ```yaml
+    priorityClassName: production-high
+    affinity:
+      nodeAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          preference:
+            matchExpressions:
+            - key: node-lifecycle
+              operator: In
+              values:
+              - on-demand
+        - weight: 10
+          preference:
+            matchExpressions:
+            - key: node-lifecycle
+              operator: In
+              values:
+              - spot
+    ```
+    
+    ### Pattern 3: Batch Jobs on Spot Only
+    ```yaml
+    priorityClassName: batch-low
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+          - matchExpressions:
+            - key: node-lifecycle
+              operator: In
+              values:
+              - spot
+    ```
+    
+    ## Preemption Behavior
+    
+    ### PreemptLowerPriority (default)
+    - Can preempt (evict) lower-priority pods
+    - Kubernetes will evict lower-priority pods to make room
+    - Use for critical workloads
+    
+    ### Never
+    - Cannot preempt other pods
+    - Will wait for resources to become available
+    - Use for batch jobs, non-urgent workloads
+    
+    ## Cost Optimization Scenarios
+    
+    ### Scenario 1: 70% Cost Reduction
+    
+    **Setup:**
+    - 30% on-demand (production-critical)
+    - 70% spot (production-standard, batch)
+    
+    **Savings:**
+    - On-demand cost: 30% × $1.00 = $0.30
+    - Spot cost: 70% × $0.30 = $0.21
+    - Total: $0.51 per instance (49% savings)
+    
+    ### Scenario 2: Maximum Savings (Aggressive)
+    
+    **Setup:**
+    - 10% on-demand (production-critical only)
+    - 90% spot (everything else)
+    
+    **Savings:**
+    - On-demand cost: 10% × $1.00 = $0.10
+    - Spot cost: 90% × $0.30 = $0.27
+    - Total: $0.37 per instance (63% savings)
+    
+    ### Scenario 3: Balanced (Recommended)
+    
+    **Setup:**
+    - 40% on-demand (critical + high priority)
+    - 60% spot (standard + batch)
+    
+    **Savings:**
+    - On-demand cost: 40% × $1.00 = $0.40
+    - Spot cost: 60% × $0.30 = $0.18
+    - Total: $0.58 per instance (42% savings)
+    
+    ## Testing Priority Classes
+    
+    ### View All Priority Classes
+    ```bash
+    kubectl get priorityclasses
+    ```
+    
+    ### Test Preemption
+    ```bash
+    # 1. Fill cluster with low-priority pods
+    kubectl apply -f low-priority-deployment.yaml
+    
+    # 2. Deploy high-priority pod
+    kubectl apply -f high-priority-pod.yaml
+    
+    # 3. Watch eviction events
+    kubectl get events --sort-by='.lastTimestamp' | grep Preempted
+    ```
+    
+    ### Check Pod Priority
+    ```bash
+    kubectl get pods -o custom-columns=\
+    NAME:.metadata.name,\
+    PRIORITY:.spec.priority,\
+    PRIORITY_CLASS:.spec.priorityClassName
+    ```
+    
+    ## Best Practices
+    
+    1. **Don't over-use high priorities**
+       - If everything is high priority, nothing is
+       - Reserve critical for truly essential workloads
+    
+    2. **Set globalDefault**
+       - Ensure pods without priorityClassName get reasonable priority
+       - Prevents accidental high-priority scheduling
+    
+    3. **Combine with PodDisruptionBudget**
+       - Priority helps with scheduling
+       - PDB protects against voluntary disruptions
+    
+    4. **Use preemptionPolicy wisely**
+       - Batch jobs: Never (don't disrupt others)
+       - Critical services: PreemptLowerPriority
+    
+    5. **Document your priority strategy**
+       - Make it clear which priority for which workload
+       - Include in deployment templates
+

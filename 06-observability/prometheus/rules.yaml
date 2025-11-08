@@ -1,0 +1,261 @@
+---
+# Prometheus Recording and Alerting Rules
+# Production-ready alerts for Kubernetes resource optimization
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-rules
+  namespace: monitoring
+  labels:
+    app: prometheus
+data:
+  resource-optimization.rules: |
+    groups:
+    - name: resource_optimization
+      interval: 30s
+      rules:
+      
+      # Recording Rules - Pre-compute expensive queries
+      
+      - record: node:cpu_utilization:avg
+        expr: |
+          100 - (avg by (node) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)
+      
+      - record: node:memory_utilization:percent
+        expr: |
+          100 * (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))
+      
+      - record: pod:cpu_usage:rate5m
+        expr: |
+          sum by (namespace, pod, container) (rate(container_cpu_usage_seconds_total{container!="",container!="POD"}[5m]))
+      
+      - record: pod:memory_usage:bytes
+        expr: |
+          sum by (namespace, pod, container) (container_memory_working_set_bytes{container!="",container!="POD"})
+      
+      - record: pod:cpu_request:total
+        expr: |
+          sum by (namespace, pod) (kube_pod_container_resource_requests{resource="cpu"})
+      
+      - record: pod:memory_request:total
+        expr: |
+          sum by (namespace, pod) (kube_pod_container_resource_requests{resource="memory"})
+      
+      - record: pod:cpu_limit:total
+        expr: |
+          sum by (namespace, pod) (kube_pod_container_resource_limits{resource="cpu"})
+      
+      - record: pod:memory_limit:total
+        expr: |
+          sum by (namespace, pod) (kube_pod_container_resource_limits{resource="memory"})
+      
+      # CPU throttling percentage
+      - record: pod:cpu_throttling:rate5m
+        expr: |
+          sum by (namespace, pod, container) (rate(container_cpu_cfs_throttled_seconds_total[5m])) 
+          / 
+          sum by (namespace, pod, container) (rate(container_cpu_cfs_periods_total[5m])) * 100
+      
+      # Resource utilization vs requests
+      - record: pod:cpu_utilization:request_ratio
+        expr: |
+          pod:cpu_usage:rate5m / pod:cpu_request:total
+      
+      - record: pod:memory_utilization:request_ratio
+        expr: |
+          pod:memory_usage:bytes / pod:memory_request:total
+      
+      # Alerting Rules
+      
+      - alert: PodCPUThrottlingHigh
+        expr: |
+          pod:cpu_throttling:rate5m > 10
+        for: 15m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is experiencing high CPU throttling"
+          description: "CPU throttling is {{ $value | humanizePercentage }} for pod {{ $labels.namespace }}/{{ $labels.pod }}. Consider increasing CPU limits."
+          runbook: "https://runbooks.mycompany.com/cpu-throttling"
+      
+      - alert: PodMemoryNearLimit
+        expr: |
+          (pod:memory_usage:bytes / pod:memory_limit:total) > 0.9
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} memory usage near limit"
+          description: "Memory usage is {{ $value | humanizePercentage }} of limit. OOMKill risk!"
+          runbook: "https://runbooks.mycompany.com/high-memory"
+      
+      - alert: PodCPUUnderUtilized
+        expr: |
+          (pod:cpu_usage:rate5m / pod:cpu_request:total) < 0.2
+        for: 24h
+        labels:
+          severity: info
+          team: platform
+          cost_optimization: "true"
+        annotations:
+          summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} CPU underutilized"
+          description: "CPU utilization only {{ $value | humanizePercentage }} of request. Consider reducing CPU requests."
+          runbook: "https://runbooks.mycompany.com/underutilized-cpu"
+      
+      - alert: PodMemoryUnderUtilized
+        expr: |
+          (pod:memory_usage:bytes / pod:memory_request:total) < 0.3
+        for: 24h
+        labels:
+          severity: info
+          team: platform
+          cost_optimization: "true"
+        annotations:
+          summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} memory underutilized"
+          description: "Memory utilization only {{ $value | humanizePercentage }} of request. Consider reducing memory requests."
+          runbook: "https://runbooks.mycompany.com/underutilized-memory"
+      
+      - alert: NodeCPUUtilizationHigh
+        expr: |
+          node:cpu_utilization:avg > 85
+        for: 15m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Node {{ $labels.node }} CPU utilization high"
+          description: "CPU utilization is {{ $value | humanizePercentage }} on node {{ $labels.node }}."
+          runbook: "https://runbooks.mycompany.com/high-node-cpu"
+      
+      - alert: NodeMemoryUtilizationHigh
+        expr: |
+          node:memory_utilization:percent > 85
+        for: 15m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Node {{ $labels.node }} memory utilization high"
+          description: "Memory utilization is {{ $value | humanizePercentage }} on node {{ $labels.node }}."
+          runbook: "https://runbooks.mycompany.com/high-node-memory"
+      
+      - alert: NodeCPUUtilizationLow
+        expr: |
+          node:cpu_utilization:avg < 20
+        for: 2h
+        labels:
+          severity: info
+          team: platform
+          cost_optimization: "true"
+        annotations:
+          summary: "Node {{ $labels.node }} CPU utilization low"
+          description: "CPU utilization only {{ $value | humanizePercentage }}. Consider consolidating pods or scaling down."
+          runbook: "https://runbooks.mycompany.com/low-node-utilization"
+      
+      - alert: PodOOMKilled
+        expr: |
+          increase(kube_pod_container_status_restarts_total[5m]) > 0
+          and
+          kube_pod_container_status_last_terminated_reason{reason="OOMKilled"} == 1
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} was OOMKilled"
+          description: "Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} was killed due to OOM. Increase memory limits!"
+          runbook: "https://runbooks.mycompany.com/oomkilled"
+      
+      - alert: PodCrashLooping
+        expr: |
+          rate(kube_pod_container_status_restarts_total[15m]) > 0
+        for: 15m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is crash looping"
+          description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has restarted {{ $value }} times in 15 minutes."
+          runbook: "https://runbooks.mycompany.com/crash-loop"
+      
+      - alert: HPAMaxReplicasReached
+        expr: |
+          kube_horizontalpodautoscaler_status_current_replicas 
+          >= 
+          kube_horizontalpodautoscaler_spec_max_replicas
+        for: 15m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "HPA {{ $labels.namespace }}/{{ $labels.horizontalpodautoscaler }} at max replicas"
+          description: "HPA has reached maximum replicas. Consider increasing maxReplicas or optimizing application."
+          runbook: "https://runbooks.mycompany.com/hpa-max-replicas"
+      
+      - alert: HPAUnableToScale
+        expr: |
+          kube_horizontalpodautoscaler_status_condition{condition="ScalingLimited",status="true"} == 1
+        for: 15m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "HPA {{ $labels.namespace }}/{{ $labels.horizontalpodautoscaler }} unable to scale"
+          description: "HPA is unable to scale. Check resource availability and HPA configuration."
+          runbook: "https://runbooks.mycompany.com/hpa-scaling-limited"
+      
+      - alert: PDBViolation
+        expr: |
+          kube_poddisruptionbudget_status_pod_disruptions_allowed == 0
+        for: 30m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "PDB {{ $labels.namespace }}/{{ $labels.poddisruptionbudget }} blocking disruptions"
+          description: "PodDisruptionBudget is blocking all disruptions. May prevent node drains and upgrades."
+          runbook: "https://runbooks.mycompany.com/pdb-blocking"
+      
+      - alert: SpotInstanceInterruptionRate
+        expr: |
+          sum(rate(kube_node_status_condition{condition="Ready",status="false",label_node_lifecycle="spot"}[1h])) 
+          / 
+          count(kube_node_info{label_node_lifecycle="spot"}) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+          cost_optimization: "true"
+        annotations:
+          summary: "High spot instance interruption rate"
+          description: "Spot node interruption rate is {{ $value | humanizePercentage }}. Consider diversifying instance types."
+          runbook: "https://runbooks.mycompany.com/spot-interruptions"
+      
+      - alert: ClusterCostAnomalyDetected
+        expr: |
+          (
+            sum(kube_node_status_capacity{resource="cpu"}) 
+            * 
+            avg_over_time(node:cpu_utilization:avg[24h])
+          ) 
+          > 
+          (
+            sum(kube_node_status_capacity{resource="cpu"}) 
+            * 
+            avg_over_time(node:cpu_utilization:avg[7d]) 
+            * 
+            1.5
+          )
+        for: 1h
+        labels:
+          severity: warning
+          team: platform
+          cost_optimization: "true"
+        annotations:
+          summary: "Cluster cost anomaly detected"
+          description: "Resource usage is 50% higher than 7-day average. Investigate for waste or unexpected workloads."
+          runbook: "https://runbooks.mycompany.com/cost-anomaly"
+
