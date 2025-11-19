@@ -1,0 +1,459 @@
+---
+# KEDA ScaledObject - Prometheus Custom Metrics
+#
+# Scale based on custom application metrics exposed to Prometheus
+# This allows scaling on any business metric you can measure
+#
+# Examples:
+# - Active WebSocket connections
+# - Database connection pool utilization
+# - Cache hit ratio
+# - API response time
+# - Active user sessions
+
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: prometheus-custom-metrics-scaler
+  namespace: production
+  labels:
+    app: myapp
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: myapp
+  
+  pollingInterval: 15   # Check metrics every 15 seconds
+  cooldownPeriod: 300   # 5 minutes cooldown
+  
+  minReplicaCount: 3
+  maxReplicaCount: 50
+  
+  triggers:
+  # Trigger 1: HTTP Request Rate
+  - type: prometheus
+    metadata:
+      # Prometheus server URL
+      serverAddress: http://prometheus-server.monitoring.svc.cluster.local:9090
+      
+      # PromQL query - rate of HTTP requests per pod
+      query: |
+        sum(rate(http_requests_total{app="myapp",namespace="production"}[2m])) 
+        / 
+        count(kube_pod_info{namespace="production",pod=~"myapp-.*"})
+      
+      # Target value - scale when requests per pod exceed this
+      threshold: "1000"  # 1000 requests/second per pod
+      
+      # Activation threshold - scale from 0 to 1
+      activationThreshold: "100"
+  
+  # Trigger 2: P95 Response Time
+  - type: prometheus
+    metadata:
+      serverAddress: http://prometheus-server.monitoring.svc.cluster.local:9090
+      
+      # P95 latency query
+      query: |
+        histogram_quantile(0.95,
+          sum(rate(http_request_duration_seconds_bucket{app="myapp"}[5m])) by (le)
+        ) * 1000
+      
+      # Scale when P95 latency > 500ms
+      threshold: "500"
+      activationThreshold: "200"
+  
+  # Trigger 3: Active WebSocket Connections
+  - type: prometheus
+    metadata:
+      serverAddress: http://prometheus-server.monitoring.svc.cluster.local:9090
+      
+      # Count active WebSocket connections per pod
+      query: |
+        sum(websocket_connections_active{app="myapp"}) 
+        / 
+        count(up{job="myapp"})
+      
+      # Target: 500 connections per pod
+      threshold: "500"
+      activationThreshold: "50"
+  
+  # Trigger 4: Database Connection Pool Usage
+  - type: prometheus
+    metadata:
+      serverAddress: http://prometheus-server.monitoring.svc.cluster.local:9090
+      
+      # Connection pool utilization percentage
+      query: |
+        (sum(db_connections_active{app="myapp"}) 
+        / 
+        sum(db_connections_max{app="myapp"})) * 100
+      
+      # Scale when connection pool > 70% utilized
+      threshold: "70"
+
+---
+# KEDA ScaledObject - Queue Depth (Prometheus)
+# Monitor message queue depth from Prometheus metrics
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: queue-depth-scaler
+  namespace: production
+spec:
+  scaleTargetRef:
+    name: queue-processor
+  
+  minReplicaCount: 2
+  maxReplicaCount: 30
+  
+  pollingInterval: 30
+  cooldownPeriod: 600  # 10 minutes for batch jobs
+  
+  triggers:
+  - type: prometheus
+    metadata:
+      serverAddress: http://prometheus-server.monitoring.svc.cluster.local:9090
+      
+      # Query: messages waiting in queue
+      query: |
+        sum(rabbitmq_queue_messages{queue="tasks",vhost="production"})
+      
+      # Process 50 messages per pod
+      threshold: "50"
+      activationThreshold: "10"
+
+---
+# KEDA ScaledObject - CPU/Memory from Prometheus
+# Alternative to standard HPA, using Prometheus metrics
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: prometheus-resource-scaler
+  namespace: production
+spec:
+  scaleTargetRef:
+    name: myapp
+  
+  minReplicaCount: 3
+  maxReplicaCount: 20
+  
+  triggers:
+  # CPU utilization from Prometheus
+  - type: prometheus
+    metadata:
+      serverAddress: http://prometheus-server.monitoring.svc.cluster.local:9090
+      
+      # Average CPU usage across all pods
+      query: |
+        avg(rate(container_cpu_usage_seconds_total{
+          namespace="production",
+          pod=~"myapp-.*",
+          container="myapp"
+        }[3m])) * 100
+      
+      threshold: "70"  # 70% CPU
+  
+  # Memory utilization from Prometheus
+  - type: prometheus
+    metadata:
+      serverAddress: http://prometheus-server.monitoring.svc.cluster.local:9090
+      
+      # Average memory usage percentage
+      query: |
+        avg(
+          container_memory_working_set_bytes{
+            namespace="production",
+            pod=~"myapp-.*",
+            container="myapp"
+          } 
+          / 
+          container_spec_memory_limit_bytes{
+            namespace="production",
+            pod=~"myapp-.*",
+            container="myapp"
+          }
+        ) * 100
+      
+      threshold: "80"  # 80% memory
+
+---
+# KEDA ScaledObject - Business Metrics (Revenue/User Activity)
+# Scale based on actual business value metrics
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: business-metrics-scaler
+  namespace: production
+  annotations:
+    description: "Scale based on active users and transaction rate"
+spec:
+  scaleTargetRef:
+    name: transaction-processor
+  
+  minReplicaCount: 5
+  maxReplicaCount: 100
+  
+  pollingInterval: 30
+  cooldownPeriod: 300
+  
+  triggers:
+  # Active user sessions
+  - type: prometheus
+    metadata:
+      serverAddress: http://prometheus-server.monitoring.svc.cluster.local:9090
+      
+      query: |
+        sum(active_user_sessions{app="myapp"})
+      
+      # 500 active users per pod
+      threshold: "500"
+      activationThreshold: "100"
+  
+  # Transactions per second
+  - type: prometheus
+    metadata:
+      serverAddress: http://prometheus-server.monitoring.svc.cluster.local:9090
+      
+      query: |
+        sum(rate(transactions_total{status="success"}[2m]))
+      
+      # 100 TPS per pod
+      threshold: "100"
+
+---
+# KEDA ScaledObject - Cache Hit Ratio
+# Scale when cache performance degrades
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: cache-performance-scaler
+  namespace: production
+spec:
+  scaleTargetRef:
+    name: cache-service
+  
+  minReplicaCount: 3
+  maxReplicaCount: 15
+  
+  triggers:
+  # Scale up when cache hit ratio drops (more load)
+  - type: prometheus
+    metadata:
+      serverAddress: http://prometheus-server.monitoring.svc.cluster.local:9090
+      
+      # Cache hit ratio (inverted - scale when low)
+      query: |
+        100 - (
+          sum(rate(cache_hits_total[5m])) 
+          / 
+          sum(rate(cache_requests_total[5m])) * 100
+        )
+      
+      # Scale when hit ratio drops below 80% (threshold = 20)
+      threshold: "20"
+
+---
+# TriggerAuthentication - Prometheus (if auth required)
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: prometheus-auth
+  namespace: production
+spec:
+  secretTargetRef:
+  - parameter: bearerToken
+    name: prometheus-secrets
+    key: token
+  - parameter: ca
+    name: prometheus-secrets
+    key: ca-cert
+
+---
+# ConfigMap - Prometheus Scaler Guide
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-scaler-guide
+  namespace: production
+data:
+  guide.md: |
+    # Prometheus KEDA Scaler Guide
+    
+    ## Writing Effective PromQL Queries
+    
+    ### Query Pattern 1: Per-Pod Metrics
+    ```promql
+    # Calculate average metric value per pod
+    sum(metric{labels}) / count(kube_pod_info{pod=~"app-.*"})
+    ```
+    
+    ### Query Pattern 2: Rate of Increase
+    ```promql
+    # Requests per second over 2 minutes
+    sum(rate(http_requests_total{app="myapp"}[2m]))
+    ```
+    
+    ### Query Pattern 3: Percentage/Ratio
+    ```promql
+    # Success rate
+    sum(rate(requests_success[5m])) 
+    / 
+    sum(rate(requests_total[5m])) * 100
+    ```
+    
+    ### Query Pattern 4: Percentile (Histogram)
+    ```promql
+    # P95 latency
+    histogram_quantile(0.95,
+      sum(rate(http_duration_bucket[5m])) by (le)
+    )
+    ```
+    
+    ## Threshold Calculation
+    
+    ### Example: Request Rate Scaling
+    
+    **Requirement**: Each pod can handle 1000 req/s
+    
+    ```yaml
+    query: |
+      sum(rate(http_requests_total[2m])) 
+      / 
+      count(up{job="myapp"})
+    threshold: "1000"
+    ```
+    
+    **Scaling Math**:
+    - Current: 5 pods, 6000 req/s total
+    - Per pod: 6000 / 5 = 1200 req/s
+    - Threshold: 1000 req/s
+    - Desired replicas: ceil(6000 / 1000) = 6 pods
+    
+    ### Example: Latency-based Scaling
+    
+    **Requirement**: Keep P95 latency < 500ms
+    
+    ```yaml
+    query: |
+      histogram_quantile(0.95,
+        sum(rate(http_duration_bucket[5m])) by (le)
+      ) * 1000
+    threshold: "500"
+    ```
+    
+    **Result**: Scales up when latency exceeds 500ms
+    
+    ## Common Metrics for Scaling
+    
+    ### HTTP Services
+    ```promql
+    # Request rate
+    rate(http_requests_total[2m])
+    
+    # Error rate
+    rate(http_requests_total{status=~"5.."}[2m])
+    
+    # Latency
+    histogram_quantile(0.95, rate(http_duration_bucket[5m]))
+    
+    # Active connections
+    sum(http_connections_active)
+    ```
+    
+    ### Database Services
+    ```promql
+    # Connection pool usage
+    db_connections_active / db_connections_max
+    
+    # Query latency
+    rate(db_query_duration_seconds_sum[5m]) 
+    / 
+    rate(db_query_duration_seconds_count[5m])
+    
+    # Queue depth
+    db_queue_depth
+    ```
+    
+    ### Queue/Message Processors
+    ```promql
+    # Queue depth
+    rabbitmq_queue_messages
+    
+    # Processing rate
+    rate(messages_processed_total[2m])
+    
+    # Processing lag
+    messages_enqueued_total - messages_processed_total
+    ```
+    
+    ### Cache Services
+    ```promql
+    # Hit ratio
+    rate(cache_hits[5m]) / rate(cache_requests[5m])
+    
+    # Eviction rate
+    rate(cache_evictions_total[5m])
+    
+    # Memory usage
+    cache_memory_bytes / cache_memory_max_bytes
+    ```
+    
+    ## Testing Queries
+    
+    ```bash
+    # Test query in Prometheus UI
+    # Navigate to: http://prometheus:9090/graph
+    
+    # Or use API
+    curl -G http://prometheus:9090/api/v1/query \
+      --data-urlencode 'query=sum(rate(http_requests_total[2m]))'
+    ```
+    
+    ## Troubleshooting
+    
+    ### Problem: Query returns no data
+    ```bash
+    # Check if metric exists
+    curl http://prometheus:9090/api/v1/label/__name__/values | grep http_requests
+    
+    # Verify labels
+    curl -G http://prometheus:9090/api/v1/series \
+      --data-urlencode 'match[]=http_requests_total'
+    ```
+    
+    ### Problem: Incorrect scaling behavior
+    ```bash
+    # Check KEDA calculated metrics
+    kubectl get hpa -n production
+    
+    # View KEDA logs
+    kubectl logs -n keda deploy/keda-operator | grep prometheus
+    ```
+    
+    ### Problem: Authentication errors
+    ```yaml
+    # Add auth reference
+    authenticationRef:
+      name: prometheus-auth
+    ```
+    
+    ## Best Practices
+    
+    1. **Use appropriate time ranges**:
+       - Short-term spikes: `[1m]`, `[2m]`
+       - Stable metrics: `[5m]`, `[10m]`
+    
+    2. **Avoid expensive queries**:
+       - Use recording rules for complex calculations
+       - Pre-aggregate in Prometheus
+    
+    3. **Set activation thresholds**:
+       - Prevents scaling to 0 prematurely
+       - Faster cold start
+    
+    4. **Test queries before deploying**:
+       - Verify in Prometheus UI
+       - Check query performance
+

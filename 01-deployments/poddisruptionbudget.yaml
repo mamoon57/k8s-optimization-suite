@@ -1,0 +1,235 @@
+---
+# PodDisruptionBudget (PDB) - High Availability Protection
+#
+# Ensures minimum availability during voluntary disruptions:
+# - Node drains (for upgrades, maintenance)
+# - Cluster autoscaler scale-downs
+# - Manual evictions
+#
+# Does NOT protect against:
+# - Node failures (hardware/network issues)
+# - Pod crashes (OOMKilled, CrashLoopBackOff)
+# - Involuntary disruptions
+#
+# Best Practice: Use either minAvailable OR maxUnavailable, not both
+
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: myapp-pdb
+  namespace: production
+  labels:
+    app: myapp
+  annotations:
+    description: "Ensures at least 2 pods remain available during disruptions"
+spec:
+  # Option 1: Minimum available pods (absolute number)
+  minAvailable: 2
+  
+  # Option 2: Minimum available pods (percentage) - Alternative to minAvailable
+  # minAvailable: 50%
+  
+  # Option 3: Maximum unavailable pods - Alternative to minAvailable
+  # maxUnavailable: 1
+  # maxUnavailable: 25%
+  
+  selector:
+    matchLabels:
+      app: myapp
+      version: v1.0.0
+  
+  # Unhealthy pod eviction policy (Kubernetes 1.26+)
+  unhealthyPodEvictionPolicy: IfHealthyBudget  # or AlwaysAllow
+
+---
+# PDB for Critical Services - Maximum protection
+# Use this for mission-critical services that require zero downtime
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: critical-service-pdb
+  namespace: production
+  labels:
+    app: critical-service
+    priority: critical
+spec:
+  # Only allow 0 pods to be unavailable (maximum protection)
+  # This means disruptions can only happen one pod at a time
+  maxUnavailable: 0
+  
+  selector:
+    matchLabels:
+      app: critical-service
+      tier: critical
+
+---
+# PDB for Batch Jobs - Flexible availability
+# Use this for non-critical workloads that can tolerate more disruption
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: batch-job-pdb
+  namespace: production
+  labels:
+    app: batch-processor
+    priority: low
+spec:
+  # Allow up to 50% of pods to be unavailable
+  # Good for batch processing where some disruption is acceptable
+  maxUnavailable: 50%
+  
+  selector:
+    matchLabels:
+      app: batch-processor
+
+---
+# PDB for Stateful Applications
+# Use this for databases, caches, or stateful services
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: redis-pdb
+  namespace: production
+  labels:
+    app: redis
+    tier: cache
+spec:
+  # For a 3-node Redis cluster, keep at least 2 nodes (quorum)
+  minAvailable: 2
+  
+  selector:
+    matchLabels:
+      app: redis
+      role: master
+
+---
+# PDB Strategy Guide (as ConfigMap for documentation)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pdb-strategy-guide
+  namespace: production
+data:
+  strategy.md: |
+    # PodDisruptionBudget Strategy Guide
+    
+    ## When to Use PDB
+    
+    ✅ **Always use PDB for:**
+    - Production web services (APIs, frontends)
+    - Databases and stateful services
+    - Message queues and event processors
+    - Services with SLA requirements
+    
+    ❌ **Skip PDB for:**
+    - Single-replica deployments (PDB has no effect)
+    - Development/staging environments
+    - Jobs and CronJobs (use backoffLimit instead)
+    
+    ## Choosing the Right Strategy
+    
+    ### 1. High Availability Services (99.99% uptime)
+    ```yaml
+    minAvailable: 2  # Absolute number
+    # or
+    minAvailable: 80%  # Percentage
+    ```
+    
+    ### 2. Cost-Optimized Services (can tolerate brief downtime)
+    ```yaml
+    maxUnavailable: 1  # Allow one pod down at a time
+    # or
+    maxUnavailable: 30%  # Allow 30% disruption
+    ```
+    
+    ### 3. Mission-Critical (zero disruption tolerance)
+    ```yaml
+    maxUnavailable: 0  # Only one pod can be disrupted at a time
+    ```
+    
+    ### 4. Stateful Services (quorum-based)
+    ```yaml
+    # For 3-node cluster
+    minAvailable: 2  # Maintain quorum
+    
+    # For 5-node cluster
+    minAvailable: 3  # Maintain quorum
+    ```
+    
+    ## Calculation Examples
+    
+    ### Scenario 1: Web API with 5 replicas
+    - **Requirement**: Must handle 80% of normal traffic during maintenance
+    - **Solution**: `minAvailable: 4` (80% of 5 = 4)
+    
+    ### Scenario 2: Batch processor with 10 replicas
+    - **Requirement**: Can tolerate 20% capacity loss
+    - **Solution**: `maxUnavailable: 2` (20% of 10 = 2)
+    
+    ### Scenario 3: Database cluster with 3 replicas
+    - **Requirement**: Must maintain quorum (majority)
+    - **Solution**: `minAvailable: 2` (majority of 3)
+    
+    ## Common Pitfalls
+    
+    ### ❌ PDB Too Restrictive
+    ```yaml
+    # With 3 replicas, this blocks ALL disruptions!
+    minAvailable: 3
+    ```
+    **Impact**: Node drains will be blocked, preventing maintenance.
+    **Fix**: Use `minAvailable: 2` to allow one pod to be drained at a time.
+    
+    ### ❌ PDB Too Permissive
+    ```yaml
+    # With 3 replicas, this allows all pods down!
+    maxUnavailable: 3
+    ```
+    **Impact**: All pods can be drained simultaneously, causing downtime.
+    **Fix**: Use `maxUnavailable: 1` to ensure gradual draining.
+    
+    ### ❌ PDB on Single Replica
+    ```yaml
+    replicas: 1
+    minAvailable: 1
+    ```
+    **Impact**: Blocks all voluntary disruptions (node drains fail).
+    **Fix**: Either increase replicas to ≥2 or remove PDB.
+    
+    ## Testing Your PDB
+    
+    ### 1. Simulate node drain
+    ```bash
+    kubectl drain <node-name> --ignore-daemonsets --delete-emptydir-data
+    ```
+    
+    ### 2. Check PDB status
+    ```bash
+    kubectl get pdb -n production
+    kubectl describe pdb myapp-pdb -n production
+    ```
+    
+    ### 3. Verify pod eviction
+    ```bash
+    kubectl get events -n production --field-selector involvedObject.kind=Pod
+    ```
+    
+    ## Monitoring & Alerts
+    
+    ### Key Metrics to Track
+    - `kube_poddisruptionbudget_status_pod_disruptions_allowed`
+    - `kube_poddisruptionbudget_status_desired_healthy`
+    - `kube_poddisruptionbudget_status_current_healthy`
+    
+    ### Recommended Alerts
+    ```yaml
+    # Alert when PDB is blocking disruptions
+    - alert: PDBBlockingDisruptions
+      expr: kube_poddisruptionbudget_status_pod_disruptions_allowed == 0
+      for: 30m
+      labels:
+        severity: warning
+      annotations:
+        summary: "PDB {{ $labels.namespace }}/{{ $labels.poddisruptionbudget }} is blocking disruptions"
+    ```
+

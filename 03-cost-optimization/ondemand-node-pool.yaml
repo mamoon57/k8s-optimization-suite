@@ -1,0 +1,581 @@
+---
+# AWS EKS On-Demand Node Group Configuration
+#
+# On-Demand instances provide guaranteed capacity with no interruptions
+# More expensive than Spot, but essential for critical workloads
+#
+# Use for:
+# - Stateful applications (databases, caches)
+# - Critical services (auth, payment processing)
+# - Workloads requiring guaranteed capacity
+# - Baseline capacity (always-on infrastructure)
+
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: my-cluster
+  region: us-east-1
+  version: "1.28"
+
+managedNodeGroups:
+  # On-Demand Node Group - Production Critical
+  - name: ondemand-critical
+    # Single instance type for predictable performance
+    instanceTypes:
+      - t3.xlarge  # 4 vCPU, 16 GB RAM
+    
+    # On-Demand configuration
+    spot: false  # Explicitly disable spot
+    
+    # Scaling configuration - Conservative for critical workloads
+    minSize: 3       # Minimum for HA across 3 AZs
+    maxSize: 15      # Limited scaling (controlled costs)
+    desiredCapacity: 5
+    
+    # Volume configuration
+    volumeSize: 100  # GB
+    volumeType: gp3
+    volumeIOPS: 3000
+    volumeThroughput: 125
+    volumeEncrypted: true
+    
+    # SSH access (disabled for security)
+    ssh:
+      allow: false
+    
+    # Labels - Used for pod scheduling
+    labels:
+      node-lifecycle: on-demand
+      workload-type: critical
+      guaranteed-capacity: "true"
+      tier: production
+    
+    # No taints - allow all pods to schedule here
+    # (Critical workloads should explicitly prefer on-demand)
+    
+    # Tags for cost allocation
+    tags:
+      Environment: production
+      ManagedBy: eksctl
+      NodeType: on-demand
+      CostCenter: engineering
+      Tier: critical
+    
+    # IAM policies
+    iam:
+      withAddonPolicies:
+        autoScaler: true
+        ebs: true
+        efs: true
+        albIngress: true
+        cloudWatch: true
+        externalDNS: true
+        certManager: true
+    
+    # Instance metadata options (IMDSv2)
+    instanceMetadataOptions:
+      httpPutResponseHopLimit: 2
+      httpTokens: required
+    
+    # Update configuration
+    updateConfig:
+      maxUnavailable: 1  # Rolling update one node at a time
+
+---
+# On-Demand Node Group - General Purpose
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: my-cluster
+  region: us-east-1
+
+managedNodeGroups:
+  - name: ondemand-general
+    instanceTypes:
+      - t3.large  # 2 vCPU, 8 GB RAM
+    
+    spot: false
+    
+    # Moderate scaling for general workloads
+    minSize: 2
+    maxSize: 20
+    desiredCapacity: 5
+    
+    volumeSize: 80
+    volumeType: gp3
+    volumeEncrypted: true
+    
+    labels:
+      node-lifecycle: on-demand
+      workload-type: general
+      cost-tier: standard
+    
+    tags:
+      Environment: production
+      NodeType: on-demand
+      Workload: general-purpose
+    
+    iam:
+      withAddonPolicies:
+        autoScaler: true
+        ebs: true
+        cloudWatch: true
+    
+    instanceMetadataOptions:
+      httpPutResponseHopLimit: 2
+      httpTokens: required
+
+---
+# On-Demand Node Group - System Components
+# Dedicated nodes for kube-system pods
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: my-cluster
+  region: us-east-1
+
+managedNodeGroups:
+  - name: ondemand-system
+    instanceTypes:
+      - t3.medium  # 2 vCPU, 4 GB RAM - Smaller for system pods
+    
+    spot: false
+    
+    # Small, stable node group for system pods
+    minSize: 2
+    maxSize: 4
+    desiredCapacity: 2
+    
+    volumeSize: 50
+    volumeType: gp3
+    volumeEncrypted: true
+    
+    labels:
+      node-lifecycle: on-demand
+      workload-type: system
+      node-role: system-components
+    
+    # Taint to only allow system pods
+    taints:
+      - key: CriticalAddonsOnly
+        value: "true"
+        effect: NoSchedule
+    
+    tags:
+      Environment: production
+      NodeType: on-demand-system
+      Workload: kube-system
+    
+    iam:
+      withAddonPolicies:
+        autoScaler: true
+        ebs: true
+        cloudWatch: true
+        externalDNS: true
+        certManager: true
+    
+    instanceMetadataOptions:
+      httpPutResponseHopLimit: 2
+      httpTokens: required
+
+---
+# On-Demand Node Group - Stateful Workloads
+# For databases, caches, and stateful applications
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: my-cluster
+  region: us-east-1
+
+managedNodeGroups:
+  - name: ondemand-stateful
+    # Memory-optimized instance type
+    instanceTypes:
+      - r6a.xlarge  # 4 vCPU, 32 GB RAM
+    
+    spot: false
+    
+    minSize: 3  # HA for stateful apps
+    maxSize: 10
+    desiredCapacity: 3
+    
+    # Larger volumes for stateful data
+    volumeSize: 500
+    volumeType: gp3
+    volumeIOPS: 10000  # Higher IOPS for database workloads
+    volumeThroughput: 500
+    volumeEncrypted: true
+    
+    labels:
+      node-lifecycle: on-demand
+      workload-type: stateful
+      storage: local-ssd
+      instance-category: memory-optimized
+    
+    # Taint to isolate stateful workloads
+    taints:
+      - key: stateful
+        value: "true"
+        effect: NoSchedule
+    
+    tags:
+      Environment: production
+      NodeType: on-demand-stateful
+      Workload: databases
+      DataResident: "true"
+    
+    iam:
+      withAddonPolicies:
+        autoScaler: true
+        ebs: true
+        efs: true
+        fsx: true
+        cloudWatch: true
+    
+    instanceMetadataOptions:
+      httpPutResponseHopLimit: 2
+      httpTokens: required
+    
+    # Dedicated placement group for low latency
+    # placementGroup:
+    #   strategy: cluster
+
+---
+# On-Demand Node Group - ARM Graviton (Cost-Optimized)
+# 20% cheaper than x86 On-Demand, better price-performance
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: my-cluster
+  region: us-east-1
+
+managedNodeGroups:
+  - name: ondemand-arm
+    # ARM-based Graviton instances
+    instanceTypes:
+      - t4g.medium   # 2 vCPU, 4 GB RAM
+      - t4g.large    # 2 vCPU, 8 GB RAM
+      - t4g.xlarge   # 4 vCPU, 16 GB RAM
+    
+    # AMI selection for ARM
+    ami: auto
+    amiFamily: AmazonLinux2
+    
+    spot: false
+    
+    minSize: 2
+    maxSize: 20
+    desiredCapacity: 5
+    
+    volumeSize: 80
+    volumeType: gp3
+    volumeEncrypted: true
+    
+    labels:
+      node-lifecycle: on-demand
+      arch: arm64
+      instance-family: graviton
+      cost-optimized: "true"
+    
+    tags:
+      Environment: production
+      NodeType: on-demand-arm
+      Architecture: arm64
+      CostOptimized: "true"
+    
+    iam:
+      withAddonPolicies:
+        autoScaler: true
+        ebs: true
+        cloudWatch: true
+    
+    instanceMetadataOptions:
+      httpPutResponseHopLimit: 2
+      httpTokens: required
+
+---
+# ConfigMap - On-Demand Strategy Guide
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ondemand-strategy-guide
+  namespace: kube-system
+data:
+  guide.md: |
+    # On-Demand Instance Strategy Guide
+    
+    ## When to Use On-Demand
+    
+    ### ✅ Critical Workloads
+    - Authentication/Authorization services
+    - Payment processing
+    - Core business APIs
+    - Databases (PostgreSQL, MySQL, MongoDB)
+    - In-memory caches (Redis, Memcached)
+    - Message queues (RabbitMQ, Kafka)
+    
+    ### ✅ Stateful Applications
+    - Any workload with local state
+    - StatefulSets with persistent volumes
+    - Long-running processes that can't be interrupted
+    
+    ### ✅ Baseline Capacity
+    - Minimum infrastructure always needed
+    - Foundation for autoscaling
+    - Guaranteed resources for core services
+    
+    ### ❌ Don't Use On-Demand For
+    - Batch jobs (use Spot)
+    - Stateless web servers with HA (use mixed Spot + On-Demand)
+    - Development/testing (use Spot)
+    - Horizontally scalable workers (use Spot)
+    
+    ## Instance Type Selection
+    
+    ### T3/T3a - General Purpose (Burstable)
+    **Best for**: Variable CPU workloads, web servers, dev environments
+    
+    ```yaml
+    instanceTypes:
+      - t3.medium   # 2 vCPU, 4 GB  - $0.0416/hr
+      - t3.large    # 2 vCPU, 8 GB  - $0.0832/hr
+      - t3.xlarge   # 4 vCPU, 16 GB - $0.1664/hr
+      - t3a.xlarge  # 4 vCPU, 16 GB - $0.1496/hr (AMD, 10% cheaper)
+    ```
+    
+    **CPU Credits**: Monitor credit balance, switch to M5 if consistently high CPU
+    
+    ### M5/M5a - General Purpose (Fixed Performance)
+    **Best for**: Consistent CPU usage, application servers
+    
+    ```yaml
+    instanceTypes:
+      - m5.large    # 2 vCPU, 8 GB  - $0.096/hr
+      - m5.xlarge   # 4 vCPU, 16 GB - $0.192/hr
+      - m5a.xlarge  # 4 vCPU, 16 GB - $0.172/hr (AMD)
+    ```
+    
+    ### C5/C6i - Compute Optimized
+    **Best for**: CPU-intensive workloads, batch processing, ML inference
+    
+    ```yaml
+    instanceTypes:
+      - c5.large    # 2 vCPU, 4 GB  - $0.085/hr
+      - c5.xlarge   # 4 vCPU, 8 GB  - $0.17/hr
+      - c6i.xlarge  # 4 vCPU, 8 GB  - $0.17/hr (newer gen)
+    ```
+    
+    ### R5/R6i - Memory Optimized
+    **Best for**: Databases, in-memory caches, data analytics
+    
+    ```yaml
+    instanceTypes:
+      - r5.large    # 2 vCPU, 16 GB - $0.126/hr
+      - r5.xlarge   # 4 vCPU, 32 GB - $0.252/hr
+      - r6i.xlarge  # 4 vCPU, 32 GB - $0.252/hr
+    ```
+    
+    ### T4g/M6g - ARM Graviton (Best Price-Performance)
+    **Best for**: Any ARM-compatible workload (most modern apps)
+    **Savings**: 20% cheaper than equivalent x86
+    
+    ```yaml
+    instanceTypes:
+      - t4g.medium  # 2 vCPU, 4 GB  - $0.0336/hr (20% savings)
+      - t4g.large   # 2 vCPU, 8 GB  - $0.0672/hr
+      - m6g.xlarge  # 4 vCPU, 16 GB - $0.154/hr
+    ```
+    
+    **Note**: Requires ARM-compatible container images
+    
+    ## Cost Optimization Strategies
+    
+    ### Strategy 1: Right-Size Instances
+    
+    **Over-provisioned (Common mistake)**:
+    ```yaml
+    instanceTypes:
+      - m5.2xlarge  # 8 vCPU, 32 GB - $0.384/hr
+    minSize: 10
+    # Cost: $2,764/month per node × 10 = $27,640/month
+    ```
+    
+    **Right-sized**:
+    ```yaml
+    instanceTypes:
+      - m5.xlarge   # 4 vCPU, 16 GB - $0.192/hr
+    minSize: 15
+    # Cost: $1,382/month per node × 15 = $20,736/month
+    # Savings: $6,904/month (25%)
+    ```
+    
+    ### Strategy 2: Use ARM Graviton
+    
+    **x86 On-Demand**:
+    ```yaml
+    instanceTypes:
+      - t3.xlarge   # $0.1664/hr
+    minSize: 10
+    # Cost: $1,198/month × 10 = $11,980/month
+    ```
+    
+    **ARM Graviton**:
+    ```yaml
+    instanceTypes:
+      - t4g.xlarge  # $0.1344/hr (19% cheaper)
+    minSize: 10
+    # Cost: $967/month × 10 = $9,670/month
+    # Savings: $2,310/month (19%)
+    ```
+    
+    ### Strategy 3: Mix with Spot for Burst Capacity
+    
+    **Pure On-Demand**:
+    ```yaml
+    # On-demand only
+    minSize: 10
+    maxSize: 50
+    # Peak cost: 50 nodes × $138/mo = $6,900/month
+    ```
+    
+    **Mixed (On-Demand + Spot)**:
+    ```yaml
+    # On-demand (baseline)
+    minSize: 10
+    maxSize: 15
+    # Spot (burst)
+    minSize: 0
+    maxSize: 50
+    
+    # Typical peak: 15 on-demand + 20 spot
+    # Cost: (15 × $138) + (20 × $41) = $2,070 + $820 = $2,890/month
+    # Savings: $4,010/month (58% at peak)
+    ```
+    
+    ### Strategy 4: Savings Plans / Reserved Instances
+    
+    **On-Demand Pricing**:
+    - m5.xlarge: $0.192/hr = $1,382/month
+    
+    **1-Year Savings Plan (No upfront)**:
+    - m5.xlarge: $0.128/hr = $922/month
+    - Savings: 33%
+    
+    **3-Year Savings Plan (All upfront)**:
+    - m5.xlarge: $0.093/hr = $670/month
+    - Savings: 52%
+    
+    **Best Practice**: Use Savings Plans for baseline capacity (minSize)
+    
+    ## Node Affinity Patterns
+    
+    ### Pattern 1: Require On-Demand
+    For critical workloads that MUST run on on-demand
+    
+    ```yaml
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+          - matchExpressions:
+            - key: node-lifecycle
+              operator: In
+              values:
+              - on-demand
+    ```
+    
+    ### Pattern 2: Prefer On-Demand, Tolerate Spot
+    For important but fault-tolerant workloads
+    
+    ```yaml
+    affinity:
+      nodeAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          preference:
+            matchExpressions:
+            - key: node-lifecycle
+              operator: In
+              values:
+              - on-demand
+        - weight: 10
+          preference:
+            matchExpressions:
+            - key: node-lifecycle
+              operator: In
+              values:
+              - spot
+    tolerations:
+    - key: spot
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+    ```
+    
+    ## Monitoring & Cost Tracking
+    
+    ### CloudWatch Metrics
+    ```bash
+    # View instance costs
+    aws ce get-cost-and-usage \
+      --time-period Start=2024-01-01,End=2024-01-31 \
+      --granularity MONTHLY \
+      --metrics "UnblendedCost" \
+      --group-by Type=DIMENSION,Key=USAGE_TYPE
+    ```
+    
+    ### Cost Allocation Tags
+    ```yaml
+    tags:
+      CostCenter: engineering
+      Team: platform
+      Project: api-gateway
+      Environment: production
+    ```
+    
+    ### Prometheus Queries
+    ```promql
+    # Total on-demand nodes
+    count(kube_node_labels{label_node_lifecycle="on-demand"})
+    
+    # CPU utilization on on-demand nodes
+    avg(rate(container_cpu_usage_seconds_total{node=~".*on-demand.*"}[5m]))
+    ```
+    
+    ## Best Practices
+    
+    1. **Start small, scale up**
+       - Begin with smaller instances
+       - Monitor actual usage
+       - Right-size based on data
+    
+    2. **Use Graviton when possible**
+       - 20% cost savings
+       - Better performance per dollar
+       - Most modern apps are compatible
+    
+    3. **Reserve capacity for baseline**
+       - Use Savings Plans for minSize nodes
+       - Keep on-demand for burst capacity
+       - Mix with spot for maximum savings
+    
+    4. **Monitor utilization**
+       - Target 60-70% CPU/memory utilization
+       - Over-provisioned? Downsize instances
+       - Under-provisioned? Increase capacity
+    
+    5. **Tag everything**
+       - Enable cost allocation tracking
+       - Identify expensive workloads
+       - Optimize per team/project
+    
+    6. **Set up budget alerts**
+       - AWS Budgets for monthly spending
+       - Alert at 80%, 90%, 100% thresholds
+       - Review monthly for optimization opportunities
+

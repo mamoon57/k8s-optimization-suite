@@ -1,0 +1,536 @@
+---
+# KEDA ScaledObject - Cron-based Predictive Scaling
+#
+# Pre-scales infrastructure before known traffic patterns
+# Perfect for:
+# - Business hours scaling (9am-5pm)
+# - Weekend/weekday differences  
+# - Seasonal events (Black Friday, holiday sales)
+# - Scheduled batch jobs
+# - Regional time zone patterns
+
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: business-hours-scaler
+  namespace: production
+  labels:
+    app: myapp
+  annotations:
+    description: "Predictive scaling for business hours traffic"
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: myapp
+  
+  pollingInterval: 60  # Check every minute for cron triggers
+  
+  # Base replica count (off-hours)
+  minReplicaCount: 3
+  maxReplicaCount: 50
+  
+  triggers:
+  # Weekday business hours (9 AM - 5 PM EST)
+  - type: cron
+    metadata:
+      timezone: America/New_York
+      start: 0 9 * * 1-5   # 9 AM Monday-Friday
+      end: 0 17 * * 1-5    # 5 PM Monday-Friday
+      desiredReplicas: "20" # Pre-scale to handle business traffic
+  
+  # Lunch hour peak (12 PM - 1 PM EST)
+  - type: cron
+    metadata:
+      timezone: America/New_York
+      start: 0 12 * * 1-5  # 12 PM Monday-Friday
+      end: 0 13 * * 1-5    # 1 PM Monday-Friday
+      desiredReplicas: "30" # Extra capacity for lunch peak
+  
+  # Weekend light traffic (scale down)
+  - type: cron
+    metadata:
+      timezone: America/New_York
+      start: 0 0 * * 0,6   # Midnight Saturday & Sunday
+      end: 0 23 * * 0,6    # 11 PM Saturday & Sunday
+      desiredReplicas: "5"  # Minimal weekend traffic
+  
+  # Night time (scale down further)
+  - type: cron
+    metadata:
+      timezone: America/New_York
+      start: 0 0 * * *     # Midnight every day
+      end: 0 7 * * *       # 7 AM every day
+      desiredReplicas: "3"  # Minimal night traffic
+
+---
+# KEDA ScaledObject - Batch Job Scheduling
+# Pre-scale before scheduled batch jobs
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: batch-job-scaler
+  namespace: production
+  labels:
+    app: batch-processor
+spec:
+  scaleTargetRef:
+    name: batch-processor
+  
+  minReplicaCount: 0  # Scale to zero when idle
+  maxReplicaCount: 50
+  
+  triggers:
+  # Daily report generation (3 AM UTC)
+  - type: cron
+    metadata:
+      timezone: UTC
+      start: 0 3 * * *    # 3 AM daily
+      end: 0 4 * * *      # 4 AM daily
+      desiredReplicas: "20" # Scale up for report generation
+  
+  # Weekly aggregation (Sunday 2 AM)
+  - type: cron
+    metadata:
+      timezone: UTC
+      start: 0 2 * * 0    # 2 AM Sunday
+      end: 0 6 * * 0      # 6 AM Sunday
+      desiredReplicas: "30" # Heavy processing
+  
+  # Month-end processing (last day of month, 11 PM)
+  - type: cron
+    metadata:
+      timezone: UTC
+      start: 0 23 L * *   # 11 PM last day of month
+      end: 0 5 * * *      # 5 AM next day
+      desiredReplicas: "40" # Maximum capacity
+
+---
+# KEDA ScaledObject - E-commerce Traffic Patterns
+# Handles typical online shopping patterns
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: ecommerce-traffic-scaler
+  namespace: production
+  labels:
+    app: web-frontend
+spec:
+  scaleTargetRef:
+    name: web-frontend
+  
+  minReplicaCount: 5
+  maxReplicaCount: 100
+  
+  triggers:
+  # Morning peak (8 AM - 10 AM)
+  - type: cron
+    metadata:
+      timezone: America/New_York
+      start: 0 8 * * *
+      end: 0 10 * * *
+      desiredReplicas: "40"
+  
+  # Lunch peak (12 PM - 2 PM)
+  - type: cron
+    metadata:
+      timezone: America/New_York
+      start: 0 12 * * *
+      end: 0 14 * * *
+      desiredReplicas: "50"
+  
+  # Evening peak (6 PM - 9 PM) - Highest traffic
+  - type: cron
+    metadata:
+      timezone: America/New_York
+      start: 0 18 * * *
+      end: 0 21 * * *
+      desiredReplicas: "70"
+  
+  # Weekend prime time (Saturday/Sunday 2 PM - 8 PM)
+  - type: cron
+    metadata:
+      timezone: America/New_York
+      start: 0 14 * * 0,6
+      end: 0 20 * * 0,6
+      desiredReplicas: "60"
+
+---
+# KEDA ScaledObject - Black Friday / Cyber Monday
+# Extreme scaling for high-traffic events
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: black-friday-scaler
+  namespace: production
+  labels:
+    app: checkout-service
+  annotations:
+    description: "Special scaling for Black Friday sales"
+spec:
+  scaleTargetRef:
+    name: checkout-service
+  
+  minReplicaCount: 10
+  maxReplicaCount: 200  # Much higher limit
+  
+  triggers:
+  # Black Friday (4th Friday of November)
+  # Note: Update dates annually or use specific dates
+  - type: cron
+    metadata:
+      timezone: America/New_York
+      # November 24-25, 2024 (example - update yearly)
+      start: 0 0 24 11 *   # Start of Black Friday
+      end: 0 23 25 11 *    # End of Saturday
+      desiredReplicas: "150" # Massive pre-scale
+  
+  # Cyber Monday (Monday after Thanksgiving)
+  - type: cron
+    metadata:
+      timezone: America/New_York
+      start: 0 0 27 11 *   # Start of Cyber Monday
+      end: 0 23 27 11 *    # End of day
+      desiredReplicas: "120"
+
+---
+# KEDA ScaledObject - Multi-Region Time Zone Scaling
+# Different scaling for different regions based on their local time
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: us-east-business-hours
+  namespace: production
+  labels:
+    app: myapp
+    region: us-east-1
+spec:
+  scaleTargetRef:
+    name: myapp-us-east
+  
+  minReplicaCount: 3
+  maxReplicaCount: 30
+  
+  triggers:
+  # US East Coast business hours
+  - type: cron
+    metadata:
+      timezone: America/New_York
+      start: 0 9 * * 1-5
+      end: 0 17 * * 1-5
+      desiredReplicas: "20"
+
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: eu-west-business-hours
+  namespace: production
+  labels:
+    app: myapp
+    region: eu-west-1
+spec:
+  scaleTargetRef:
+    name: myapp-eu-west
+  
+  minReplicaCount: 3
+  maxReplicaCount: 30
+  
+  triggers:
+  # EU business hours (London time)
+  - type: cron
+    metadata:
+      timezone: Europe/London
+      start: 0 9 * * 1-5
+      end: 0 17 * * 1-5
+      desiredReplicas: "20"
+
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: asia-business-hours
+  namespace: production
+  labels:
+    app: myapp
+    region: ap-southeast-1
+spec:
+  scaleTargetRef:
+    name: myapp-asia
+  
+  minReplicaCount: 3
+  maxReplicaCount: 30
+  
+  triggers:
+  # Asia Pacific business hours (Singapore time)
+  - type: cron
+    metadata:
+      timezone: Asia/Singapore
+      start: 0 9 * * 1-5
+      end: 0 17 * * 1-5
+      desiredReplicas: "20"
+
+---
+# ConfigMap - Cron Scaler Guide
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cron-scaler-guide
+  namespace: production
+data:
+  guide.md: |
+    # Cron-based KEDA Scaling Guide
+    
+    ## Cron Syntax
+    
+    ```
+    * * * * *
+    │ │ │ │ │
+    │ │ │ │ └─── Day of week (0-7) (0=Sunday, 7=Sunday)
+    │ │ │ └───── Month (1-12)
+    │ │ └─────── Day of month (1-31)
+    │ └───────── Hour (0-23)
+    └─────────── Minute (0-59)
+    ```
+    
+    ## Common Patterns
+    
+    ### Every Day at 9 AM
+    ```yaml
+    start: 0 9 * * *
+    ```
+    
+    ### Weekdays Only (Monday-Friday)
+    ```yaml
+    start: 0 9 * * 1-5
+    ```
+    
+    ### Weekends Only (Saturday-Sunday)
+    ```yaml
+    start: 0 9 * * 0,6
+    # or
+    start: 0 9 * * 6,0
+    ```
+    
+    ### First Day of Month
+    ```yaml
+    start: 0 0 1 * *
+    ```
+    
+    ### Last Day of Month
+    ```yaml
+    start: 0 0 L * *
+    ```
+    
+    ### Every Hour
+    ```yaml
+    start: 0 * * * *
+    ```
+    
+    ### Every 15 Minutes
+    ```yaml
+    # Use multiple triggers or other scalers
+    # Cron scaler is for scheduled events, not intervals
+    ```
+    
+    ## Time Zone Configuration
+    
+    ### Available Time Zones
+    ```yaml
+    timezone: America/New_York     # US East Coast
+    timezone: America/Los_Angeles  # US West Coast
+    timezone: America/Chicago      # US Central
+    timezone: Europe/London        # UK
+    timezone: Europe/Paris         # Central Europe
+    timezone: Asia/Tokyo           # Japan
+    timezone: Asia/Singapore       # Singapore
+    timezone: UTC                  # Universal
+    ```
+    
+    ## Strategy Patterns
+    
+    ### Pattern 1: Gradual Scale-Up
+    ```yaml
+    # Pre-scale before peak
+    - type: cron
+      metadata:
+        start: 0 8 * * *    # 8 AM
+        end: 0 9 * * *      # 9 AM
+        desiredReplicas: "10"
+    
+    # Peak hours
+    - type: cron
+      metadata:
+        start: 0 9 * * *    # 9 AM
+        end: 0 17 * * *     # 5 PM
+        desiredReplicas: "20"
+    
+    # Gradual scale-down
+    - type: cron
+      metadata:
+        start: 0 17 * * *   # 5 PM
+        end: 0 18 * * *     # 6 PM
+        desiredReplicas: "10"
+    ```
+    
+    ### Pattern 2: Scale-to-Zero Batch Jobs
+    ```yaml
+    minReplicaCount: 0  # Important!
+    
+    triggers:
+    - type: cron
+      metadata:
+        start: 0 3 * * *    # 3 AM
+        end: 0 4 * * *      # 4 AM
+        desiredReplicas: "10"
+    # Scales to 0 outside this window
+    ```
+    
+    ### Pattern 3: Multi-Peak Days
+    ```yaml
+    # Morning peak
+    - type: cron
+      metadata:
+        start: 0 9 * * *
+        end: 0 11 * * *
+        desiredReplicas: "20"
+    
+    # Lunch peak
+    - type: cron
+      metadata:
+        start: 0 12 * * *
+        end: 0 14 * * *
+        desiredReplicas: "25"
+    
+    # Evening peak
+    - type: cron
+      metadata:
+        start: 0 18 * * *
+        end: 0 20 * * *
+        desiredReplicas: "30"
+    ```
+    
+    ## Combining Cron with Other Scalers
+    
+    ```yaml
+    triggers:
+    # Baseline: Cron for predictable patterns
+    - type: cron
+      metadata:
+        start: 0 9 * * 1-5
+        end: 0 17 * * 1-5
+        desiredReplicas: "20"
+    
+    # Reactive: Prometheus for unexpected spikes
+    - type: prometheus
+      metadata:
+        query: sum(rate(http_requests[2m]))
+        threshold: "1000"
+    
+    # Result: Pre-scales at 9 AM, but can scale higher if needed
+    ```
+    
+    ## Cost Optimization Strategy
+    
+    ### Scenario: SaaS Application
+    
+    **Traffic Pattern**:
+    - Weekdays 9AM-5PM: High (B2B customers)
+    - Evenings/Nights: Very low
+    - Weekends: Low
+    
+    **Strategy**:
+    ```yaml
+    # Night time (minimal)
+    - start: 0 0 * * *
+      end: 0 8 * * *
+      desiredReplicas: "3"
+      # Cost: 3 pods × 8 hours = 24 pod-hours
+    
+    # Business hours (scaled up)
+    - start: 0 9 * * 1-5
+      end: 0 17 * * 1-5
+      desiredReplicas: "20"
+      # Cost: 20 pods × 8 hours × 5 days = 800 pod-hours/week
+    
+    # Weekends (low)
+    - start: 0 0 * * 0,6
+      end: 0 23 * * 0,6
+      desiredReplicas: "5"
+      # Cost: 5 pods × 24 hours × 2 days = 240 pod-hours/week
+    ```
+    
+    **Savings**:
+    - Without cron: 20 pods × 24/7 = 3,360 pod-hours/week
+    - With cron: ~1,400 pod-hours/week
+    - **Savings: ~58% reduction**
+    
+    ## Testing Cron Scalers
+    
+    ### View Active Cron Triggers
+    ```bash
+    kubectl describe scaledobject business-hours-scaler -n production
+    ```
+    
+    ### Check Current Time in Configured Timezone
+    ```bash
+    # On local machine
+    TZ=America/New_York date
+    
+    # In pod
+    kubectl exec -it myapp-xyz -n production -- date
+    ```
+    
+    ### Manually Trigger (for testing)
+    ```bash
+    # Temporarily set desired replicas
+    kubectl patch scaledobject business-hours-scaler -n production \
+      --type merge \
+      -p '{"spec":{"minReplicaCount":20}}'
+    ```
+    
+    ## Common Pitfalls
+    
+    ### ❌ Overlapping Cron Triggers
+    ```yaml
+    # BAD: Which one wins at 9 AM?
+    - start: 0 9 * * *
+      end: 0 17 * * *
+      desiredReplicas: "20"
+    - start: 0 9 * * *
+      end: 0 12 * * *
+      desiredReplicas: "30"
+    ```
+    **Fix**: Use non-overlapping times or ensure the more specific one has higher replicas
+    
+    ### ❌ Wrong Timezone
+    ```yaml
+    # BAD: Server is in UTC, cron uses local time
+    timezone: America/New_York
+    # But cluster nodes are in UTC
+    ```
+    **Fix**: Always explicitly set timezone to match your business logic
+    
+    ### ❌ Forgetting to Scale Down
+    ```yaml
+    # BAD: Only scale up, never down
+    - start: 0 9 * * *
+      end: 0 17 * * *
+      desiredReplicas: "20"
+    # Missing: scale down after 5 PM
+    ```
+    **Fix**: Add end-of-day scale-down trigger or rely on minReplicaCount
+    
+    ## Monitoring
+    
+    ```bash
+    # Watch scaling events
+    kubectl get scaledobject -n production -w
+    
+    # View KEDA logs
+    kubectl logs -n keda deploy/keda-operator | grep cron
+    
+    # Check HPA created by KEDA
+    kubectl get hpa -n production
+    ```
+

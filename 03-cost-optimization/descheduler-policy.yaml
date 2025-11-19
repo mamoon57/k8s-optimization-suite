@@ -1,0 +1,537 @@
+---
+# Descheduler Configuration
+# Rebalances pods across nodes for optimal bin-packing and resource utilization
+#
+# Benefits:
+# - Consolidate pods onto fewer nodes (reduce waste)
+# - Balance load across nodes
+# - Reclaim nodes with low utilization
+# - Optimize for spot/on-demand placement
+#
+# The descheduler runs as a Job/CronJob and evicts pods based on policies.
+# Scheduler then re-places these pods optimally.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: descheduler-policy
+  namespace: kube-system
+data:
+  policy.yaml: |
+    apiVersion: "descheduler/v1alpha2"
+    kind: "DeschedulerPolicy"
+    
+    # Node selector - only deschedule from labeled nodes
+    nodeSelector: "node-lifecycle=spot"  # Focus on spot nodes
+    
+    # Evict pods even if PodDisruptionBudget would be violated
+    # Set to false for production safety
+    ignorePvcPods: false
+    
+    profiles:
+    - name: default
+      pluginConfig:
+      
+      # 1. Remove Duplicate Pods
+      # If multiple pods of same deployment on one node, spread them out
+      - name: "RemoveDuplicates"
+        args:
+          namespaces:
+            include:
+            - production
+            - staging
+          excludeOwnerKinds:
+          - ReplicaSet
+          - ReplicationController
+          - StatefulSet
+          - Job
+      
+      # 2. Low Node Utilization
+      # Evict pods from underutilized nodes to consolidate
+      - name: "LowNodeUtilization"
+        args:
+          # Thresholds - when node is considered underutilized
+          thresholds:
+            cpu: 20      # < 20% CPU usage
+            memory: 20   # < 20% memory usage
+            pods: 20     # < 20% pod count
+          
+          # Target utilization after descheduling
+          targetThresholds:
+            cpu: 50      # Target 50% CPU
+            memory: 50   # Target 50% memory
+            pods: 50     # Target 50% pod count
+          
+          # Number of nodes that can be underutilized
+          numberOfNodes: 0  # Don't tolerate any underutilized nodes
+          
+          # Evict pods with local storage
+          evictLocalStoragePods: true
+      
+      # 3. High Node Utilization
+      # Evict pods from overutilized nodes
+      - name: "HighNodeUtilization"
+        args:
+          # Thresholds - when to evict from overutilized nodes
+          thresholds:
+            cpu: 80      # > 80% CPU usage
+            memory: 80   # > 80% memory usage
+          
+          # Don't evict if target utilization can't be met
+          targetThresholds:
+            cpu: 70
+            memory: 70
+      
+      # 4. Remove Pods Violating Node Affinity
+      # Evict pods that no longer match their node affinity rules
+      - name: "RemovePodsViolatingNodeAffinity"
+        args:
+          nodeAffinityType:
+          - requiredDuringSchedulingIgnoredDuringExecution
+      
+      # 5. Remove Pods Violating Inter-Pod Anti-Affinity
+      # Evict pods violating anti-affinity rules
+      - name: "RemovePodsViolatingInterPodAntiAffinity"
+        args:
+          namespaces:
+            include:
+            - production
+      
+      # 6. Remove Pods Violating Node Taints
+      # Evict pods from nodes where pod doesn't tolerate taint
+      - name: "RemovePodsViolatingNodeTaints"
+        args:
+          excludedTaints:
+          - CriticalAddonsOnly
+          - node.kubernetes.io/not-ready
+      
+      # 7. Remove Pods Violating Topology Spread Constraints
+      # Rebalance pods to meet topology spread
+      - name: "RemovePodsViolatingTopologySpreadConstraint"
+        args:
+          namespaces:
+            include:
+            - production
+          includeSoftConstraints: false
+      
+      # 8. Remove Failed Pods
+      # Clean up failed/pending pods
+      - name: "RemoveFailedPods"
+        args:
+          reasons:
+          - NodeAffinity
+          - NodeLost
+          - OutOfcpu
+          - OutOfmemory
+          minPodLifetimeSeconds: 3600  # Only if failed for > 1 hour
+          namespaces:
+            include:
+            - production
+            - staging
+      
+      # 9. Pod Lifetime
+      # Evict old pods to force recreation (useful for memory leaks)
+      - name: "PodLifeTime"
+        args:
+          maxPodLifeTimeSeconds: 604800  # 7 days
+          podStatusPhases:
+          - Running
+          namespaces:
+            include:
+            - staging
+          # Exclude production to avoid unnecessary disruption
+          labelSelector:
+            matchExpressions:
+            - key: app
+              operator: NotIn
+              values:
+              - critical-service
+      
+      plugins:
+        balance:
+          enabled:
+          - RemoveDuplicates
+          - RemovePodsViolatingTopologySpreadConstraint
+          - LowNodeUtilization
+        
+        deschedule:
+          enabled:
+          - RemovePodsViolatingNodeAffinity
+          - RemovePodsViolatingNodeTaints
+          - RemovePodsViolatingInterPodAntiAffinity
+          - RemoveFailedPods
+          - HighNodeUtilization
+
+---
+# Descheduler CronJob
+# Runs periodically to optimize pod placement
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: descheduler
+  namespace: kube-system
+spec:
+  # Run every 30 minutes
+  schedule: "*/30 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: descheduler
+        spec:
+          priorityClassName: system-cluster-critical
+          serviceAccountName: descheduler
+          restartPolicy: Never
+          containers:
+          - name: descheduler
+            image: registry.k8s.io/descheduler/descheduler:v0.28.0
+            command:
+            - "/bin/descheduler"
+            args:
+            - --policy-config-file=/policy/policy.yaml
+            - --v=3
+            - --descheduling-interval=5m
+            - --dry-run=false
+            resources:
+              requests:
+                cpu: 100m
+                memory: 128Mi
+              limits:
+                cpu: 500m
+                memory: 512Mi
+            volumeMounts:
+            - name: policy
+              mountPath: /policy
+              readOnly: true
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              runAsNonRoot: true
+              runAsUser: 1000
+          volumes:
+          - name: policy
+            configMap:
+              name: descheduler-policy
+
+---
+# ServiceAccount for Descheduler
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: descheduler
+  namespace: kube-system
+
+---
+# ClusterRole for Descheduler
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: descheduler
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - update
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+  - delete
+- apiGroups:
+  - ""
+  resources:
+  - pods/eviction
+  verbs:
+  - create
+- apiGroups:
+  - policy
+  resources:
+  - poddisruptionbudgets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - replicasets
+  - statefulsets
+  verbs:
+  - get
+  - list
+  - watch
+
+---
+# ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: descheduler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: descheduler
+subjects:
+- kind: ServiceAccount
+  name: descheduler
+  namespace: kube-system
+
+---
+# ConfigMap - Descheduler Strategy Guide
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: descheduler-guide
+  namespace: kube-system
+data:
+  guide.md: |
+    # Descheduler Strategy Guide
+    
+    ## How Descheduler Works
+    
+    1. **Scan**: Evaluates all pods and nodes against policies
+    2. **Identify**: Finds pods that should be moved
+    3. **Evict**: Gracefully deletes selected pods (respects PDB)
+    4. **Reschedule**: Kubernetes scheduler places pods optimally
+    
+    ## Key Strategies
+    
+    ### 1. LowNodeUtilization (Bin-Packing)
+    
+    **Goal**: Consolidate pods onto fewer nodes
+    
+    **Example**:
+    Before:
+    - Node A: 20% CPU (underutilized)
+    - Node B: 40% CPU
+    - Node C: 40% CPU
+    
+    After descheduling:
+    - Node A: 0% CPU (can be terminated/hibernated)
+    - Node B: 60% CPU
+    - Node C: 60% CPU
+    
+    **Cost Savings**:
+    - 3 nodes → 2 nodes = 33% reduction
+    - $300/month → $200/month = $100 saved
+    
+    ### 2. RemoveDuplicates (HA Improvement)
+    
+    **Goal**: Spread replica pods across nodes/zones
+    
+    **Example**:
+    Before:
+    - Node A: pod-1, pod-2, pod-3 (all replicas on same node!)
+    - Node B: empty
+    - Node C: empty
+    
+    After:
+    - Node A: pod-1
+    - Node B: pod-2
+    - Node C: pod-3
+    
+    **Benefit**: If Node A fails, service stays up
+    
+    ### 3. RemovePodsViolatingNodeAffinity
+    
+    **Goal**: Respect node affinity changes
+    
+    **Scenario**: You added on-demand nodes for critical workload
+    
+    Before:
+    - Critical pod on spot node (not ideal)
+    
+    After:
+    - Critical pod moved to on-demand node (matches affinity)
+    
+    ## Configuration Tuning
+    
+    ### Conservative (Production)
+    ```yaml
+    # Low risk of disruption
+    thresholds:
+      cpu: 10      # Very underutilized
+      memory: 10
+    
+    targetThresholds:
+      cpu: 40      # Conservative target
+      memory: 40
+    
+    schedule: "0 */6 * * *"  # Every 6 hours
+    ```
+    
+    ### Balanced (Recommended)
+    ```yaml
+    thresholds:
+      cpu: 20
+      memory: 20
+    
+    targetThresholds:
+      cpu: 50
+      memory: 50
+    
+    schedule: "*/30 * * * *"  # Every 30 minutes
+    ```
+    
+    ### Aggressive (Cost-Optimized)
+    ```yaml
+    thresholds:
+      cpu: 30      # More aggressive
+      memory: 30
+    
+    targetThresholds:
+      cpu: 70      # Pack tightly
+      memory: 70
+    
+    schedule: "*/15 * * * *"  # Every 15 minutes
+    ```
+    
+    ## Dry-Run Mode (Testing)
+    
+    ```yaml
+    # Deployment
+    args:
+    - --dry-run=true  # Log what would be evicted, don't actually do it
+    - --v=5           # Verbose logging
+    ```
+    
+    ```bash
+    # Watch logs to see what would happen
+    kubectl logs -f -n kube-system -l app=descheduler
+    ```
+    
+    ## Safety Mechanisms
+    
+    ### 1. Respect PodDisruptionBudget
+    Descheduler won't evict if PDB would be violated
+    
+    ```yaml
+    # In descheduler args
+    - --disable-metrics=true
+    # Automatically respects PDB
+    ```
+    
+    ### 2. Exclude Critical Namespaces
+    ```yaml
+    namespaces:
+      exclude:
+      - kube-system
+      - kube-public
+    ```
+    
+    ### 3. Exclude Critical Pods
+    ```yaml
+    labelSelector:
+      matchExpressions:
+      - key: descheduler
+        operator: NotIn
+        values:
+        - disabled
+    ```
+    
+    ## Metrics & Monitoring
+    
+    ### Prometheus Metrics
+    ```promql
+    # Pods evicted by descheduler
+    kube_pod_status_reason{reason="Evicted"}
+    
+    # Node utilization
+    100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)
+    
+    # Pods per node
+    count(kube_pod_info) by (node)
+    ```
+    
+    ### CloudWatch Logs
+    ```bash
+    # View descheduler logs
+    kubectl logs -n kube-system -l app=descheduler --tail=100
+    ```
+    
+    ## Cost Impact Example
+    
+    ### Before Descheduler
+    - 20 nodes running
+    - Average utilization: 30%
+    - Cost: 20 nodes × $138/month = $2,760/month
+    
+    ### After Descheduler
+    - 12 nodes running (pods consolidated)
+    - Average utilization: 50%
+    - Cost: 12 nodes × $138/month = $1,656/month
+    - **Savings: $1,104/month (40%)**
+    
+    ## Best Practices
+    
+    1. **Start with dry-run**
+       - Test policies before enabling
+       - Monitor logs for unexpected evictions
+    
+    2. **Run during low-traffic periods** (optional)
+       ```yaml
+       schedule: "0 2 * * *"  # 2 AM daily
+       ```
+    
+    3. **Combine with Cluster Autoscaler**
+       - Descheduler consolidates pods
+       - CA scales down empty nodes
+       - Perfect synergy for cost optimization
+    
+    4. **Set PodDisruptionBudgets**
+       - Prevents excessive evictions
+       - Maintains service availability
+    
+    5. **Monitor eviction rate**
+       - High eviction rate = policies too aggressive
+       - Tune thresholds based on actual impact
+    
+    6. **Use namespace filtering**
+       - Focus on non-critical environments first
+       - Gradually enable for production
+    
+    ## Troubleshooting
+    
+    ### Pods Keep Getting Evicted
+    **Cause**: Policies too aggressive or conflicting
+    
+    **Fix**:
+    - Increase thresholds
+    - Exclude specific namespaces/labels
+    - Check for node affinity conflicts
+    
+    ### No Pods Being Evicted
+    **Cause**: Thresholds too conservative or all nodes balanced
+    
+    **Fix**:
+    - Lower thresholds
+    - Check dry-run logs
+    - Verify descheduler is running
+    
+    ### Service Disruptions
+    **Cause**: PDB not set or too permissive
+    
+    **Fix**:
+    - Add/tighten PodDisruptionBudgets
+    - Increase terminationGracePeriodSeconds
+    - Slow down descheduling (less frequent runs)
+

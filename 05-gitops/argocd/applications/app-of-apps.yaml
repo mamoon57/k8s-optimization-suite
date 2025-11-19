@@ -1,0 +1,217 @@
+---
+# ArgoCD App-of-Apps Pattern
+# Single root application that manages all other applications
+# Provides centralized GitOps management
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root-app
+  namespace: argocd
+  finalizers:
+  - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  
+  source:
+    repoURL: https://github.com/mamoonidrees/k8s-optimization-suite.git
+    targetRevision: main
+    path: 05-gitops/argocd/applications
+  
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+    - CreateNamespace=true
+    - PruneLast=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+
+---
+# Application: Core Infrastructure
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: infrastructure
+  namespace: argocd
+  finalizers:
+  - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  
+  source:
+    repoURL: https://github.com/mamoonidrees/k8s-optimization-suite.git
+    targetRevision: main
+    path: 01-deployments
+  
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: production
+  
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 5s
+        maxDuration: 1m
+
+---
+# Application: Autoscaling (HPA, KEDA)
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: autoscaling
+  namespace: argocd
+spec:
+  project: default
+  
+  source:
+    repoURL: https://github.com/mamoonidrees/k8s-optimization-suite.git
+    targetRevision: main
+    path: 02-autoscaling
+  
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: production
+  
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+  
+  # Sync waves for ordered deployment
+  syncPolicy:
+    syncOptions:
+    - CreateNamespace=true
+    automated:
+      prune: true
+      selfHeal: true
+
+---
+# Application: Cost Optimization
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cost-optimization
+  namespace: argocd
+spec:
+  project: default
+  
+  source:
+    repoURL: https://github.com/mamoonidrees/k8s-optimization-suite.git
+    targetRevision: main
+    path: 03-cost-optimization
+  
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+
+---
+# Application: Observability
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: observability
+  namespace: argocd
+spec:
+  project: default
+  
+  source:
+    repoURL: https://github.com/mamoonidrees/k8s-optimization-suite.git
+    targetRevision: main
+    path: 06-observability
+  
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  
+  syncPolicy:
+    automated:
+      prune: false  # Don't auto-delete monitoring data
+      selfHeal: true
+    syncOptions:
+    - CreateNamespace=true
+
+---
+# ArgoCD Project for Production
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: production
+  namespace: argocd
+spec:
+  description: Production applications
+  
+  # Source repositories
+  sourceRepos:
+  - https://github.com/mamoonidrees/k8s-optimization-suite.git
+  - https://charts.helm.sh/stable
+  - https://prometheus-community.github.io/helm-charts
+  - https://kedacore.github.io/charts
+  
+  # Destination clusters and namespaces
+  destinations:
+  - namespace: production
+    server: https://kubernetes.default.svc
+  - namespace: monitoring
+    server: https://kubernetes.default.svc
+  - namespace: kube-system
+    server: https://kubernetes.default.svc
+  
+  # Cluster resource whitelist
+  clusterResourceWhitelist:
+  - group: ''
+    kind: Namespace
+  - group: ''
+    kind: Node
+  - group: 'rbac.authorization.k8s.io'
+    kind: ClusterRole
+  - group: 'rbac.authorization.k8s.io'
+    kind: ClusterRoleBinding
+  - group: 'apiextensions.k8s.io'
+    kind: CustomResourceDefinition
+  - group: 'scheduling.k8s.io'
+    kind: PriorityClass
+  
+  # Namespace resource whitelist
+  namespaceResourceWhitelist:
+  - group: '*'
+    kind: '*'
+  
+  # Roles
+  roles:
+  - name: readonly
+    description: Read-only access
+    policies:
+    - p, proj:production:readonly, applications, get, production/*, allow
+    groups:
+    - developers
+  
+  - name: deployer
+    description: Can sync applications
+    policies:
+    - p, proj:production:deployer, applications, sync, production/*, allow
+    - p, proj:production:deployer, applications, get, production/*, allow
+    groups:
+    - platform-team
+

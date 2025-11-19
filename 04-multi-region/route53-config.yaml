@@ -1,0 +1,584 @@
+---
+# AWS Route53 Multi-Region Failover Configuration
+#
+# This configuration sets up:
+# - Latency-based routing (users routed to nearest region)
+# - Health checks for automatic failover
+# - Weighted routing for gradual traffic shifts
+# - Geolocation routing for compliance/performance
+#
+# Use with CloudFormation or AWS CLI
+
+# Health Check Configuration (apply via AWS CLI)
+---
+# Health Check for US-East-1 Region
+# Command to create:
+# aws route53 create-health-check --health-check-config file://health-check-us-east-1.json
+
+healthcheck-us-east-1.json: |
+  {
+    "Type": "HTTPS",
+    "ResourcePath": "/health",
+    "FullyQualifiedDomainName": "api.myapp.com",
+    "Port": 443,
+    "RequestInterval": 30,
+    "FailureThreshold": 3,
+    "MeasureLatency": true,
+    "EnableSNI": true,
+    "Regions": [
+      "us-east-1",
+      "us-west-2",
+      "eu-west-1"
+    ],
+    "AlarmIdentifier": {
+      "Region": "us-east-1",
+      "Name": "api-health-alarm-us-east-1"
+    },
+    "InsufficientDataHealthStatus": "Unhealthy"
+  }
+
+---
+# Route53 Hosted Zone Configuration (CloudFormation)
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Multi-Region Route53 Configuration for High Availability'
+
+Parameters:
+  DomainName:
+    Type: String
+    Default: myapp.com
+    Description: Domain name for the application
+  
+  USEast1LoadBalancer:
+    Type: String
+    Description: US-East-1 ALB DNS name
+  
+  EUWest1LoadBalancer:
+    Type: String
+    Description: EU-West-1 ALB DNS name
+  
+  APSoutheast1LoadBalancer:
+    Type: String
+    Description: AP-Southeast-1 ALB DNS name
+
+Resources:
+  # Hosted Zone
+  HostedZone:
+    Type: AWS::Route53::HostedZone
+    Properties:
+      Name: !Ref DomainName
+      HostedZoneConfig:
+        Comment: Multi-region hosted zone with failover
+      HostedZoneTags:
+      - Key: Environment
+        Value: Production
+      - Key: ManagedBy
+        Value: CloudFormation
+
+  # Health Checks
+  USEast1HealthCheck:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Type: HTTPS
+        ResourcePath: /health
+        FullyQualifiedDomainName: !Sub 'us-east-1.${DomainName}'
+        Port: 443
+        RequestInterval: 30
+        FailureThreshold: 3
+        MeasureLatency: true
+        EnableSNI: true
+      HealthCheckTags:
+      - Key: Name
+        Value: us-east-1-health-check
+      - Key: Region
+        Value: us-east-1
+
+  EUWest1HealthCheck:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Type: HTTPS
+        ResourcePath: /health
+        FullyQualifiedDomainName: !Sub 'eu-west-1.${DomainName}'
+        Port: 443
+        RequestInterval: 30
+        FailureThreshold: 3
+        MeasureLatency: true
+        EnableSNI: true
+      HealthCheckTags:
+      - Key: Name
+        Value: eu-west-1-health-check
+      - Key: Region
+        Value: eu-west-1
+
+  APSoutheast1HealthCheck:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Type: HTTPS
+        ResourcePath: /health
+        FullyQualifiedDomainName: !Sub 'ap-southeast-1.${DomainName}'
+        Port: 443
+        RequestInterval: 30
+        FailureThreshold: 3
+        MeasureLatency: true
+        EnableSNI: true
+      HealthCheckTags:
+      - Key: Name
+        Value: ap-southeast-1-health-check
+      - Key: Region
+        Value: ap-southeast-1
+
+  # Latency-Based Routing - US East 1
+  LatencyRecordUSEast1:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZone
+      Name: !Sub 'api.${DomainName}'
+      Type: A
+      SetIdentifier: us-east-1
+      Region: us-east-1
+      HealthCheckId: !Ref USEast1HealthCheck
+      AliasTarget:
+        HostedZoneId: Z35SXDOTRQ7X7K  # ALB hosted zone ID for us-east-1
+        DNSName: !Ref USEast1LoadBalancer
+        EvaluateTargetHealth: true
+
+  # Latency-Based Routing - EU West 1
+  LatencyRecordEUWest1:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZone
+      Name: !Sub 'api.${DomainName}'
+      Type: A
+      SetIdentifier: eu-west-1
+      Region: eu-west-1
+      HealthCheckId: !Ref EUWest1HealthCheck
+      AliasTarget:
+        HostedZoneId: Z32O12XQLNTSW2  # ALB hosted zone ID for eu-west-1
+        DNSName: !Ref EUWest1LoadBalancer
+        EvaluateTargetHealth: true
+
+  # Latency-Based Routing - AP Southeast 1
+  LatencyRecordAPSoutheast1:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZone
+      Name: !Sub 'api.${DomainName}'
+      Type: A
+      SetIdentifier: ap-southeast-1
+      Region: ap-southeast-1
+      HealthCheckId: !Ref APSoutheast1HealthCheck
+      AliasTarget:
+        HostedZoneId: Z1LMS91P8CMLE5  # ALB hosted zone ID for ap-southeast-1
+        DNSName: !Ref APSoutheast1LoadBalancer
+        EvaluateTargetHealth: true
+
+  # Weighted Routing for Gradual Traffic Shifts (Blue-Green Deployments)
+  WeightedRecordPrimaryUSEast1:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZone
+      Name: !Sub 'app.${DomainName}'
+      Type: A
+      SetIdentifier: primary-us-east-1
+      Weight: 100  # 100% traffic initially
+      HealthCheckId: !Ref USEast1HealthCheck
+      AliasTarget:
+        HostedZoneId: Z35SXDOTRQ7X7K
+        DNSName: !Ref USEast1LoadBalancer
+        EvaluateTargetHealth: true
+
+  WeightedRecordSecondaryEUWest1:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZone
+      Name: !Sub 'app.${DomainName}'
+      Type: A
+      SetIdentifier: secondary-eu-west-1
+      Weight: 0  # 0% traffic initially (canary deployment)
+      HealthCheckId: !Ref EUWest1HealthCheck
+      AliasTarget:
+        HostedZoneId: Z32O12XQLNTSW2
+        DNSName: !Ref EUWest1LoadBalancer
+        EvaluateTargetHealth: true
+
+  # Geolocation Routing (Compliance/Data Residency)
+  GeolocationRecordEU:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZone
+      Name: !Sub 'geo.${DomainName}'
+      Type: A
+      SetIdentifier: eu-users
+      GeoLocation:
+        ContinentCode: EU
+      HealthCheckId: !Ref EUWest1HealthCheck
+      AliasTarget:
+        HostedZoneId: Z32O12XQLNTSW2
+        DNSName: !Ref EUWest1LoadBalancer
+        EvaluateTargetHealth: true
+
+  GeolocationRecordNA:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZone
+      Name: !Sub 'geo.${DomainName}'
+      Type: A
+      SetIdentifier: na-users
+      GeoLocation:
+        ContinentCode: NA
+      HealthCheckId: !Ref USEast1HealthCheck
+      AliasTarget:
+        HostedZoneId: Z35SXDOTRQ7X7K
+        DNSName: !Ref USEast1LoadBalancer
+        EvaluateTargetHealth: true
+
+  GeolocationRecordAsia:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZone
+      Name: !Sub 'geo.${DomainName}'
+      Type: A
+      SetIdentifier: asia-users
+      GeoLocation:
+        ContinentCode: AS
+      HealthCheckId: !Ref APSoutheast1HealthCheck
+      AliasTarget:
+        HostedZoneId: Z1LMS91P8CMLE5
+        DNSName: !Ref APSoutheast1LoadBalancer
+        EvaluateTargetHealth: true
+
+  # Failover Routing (Primary-Secondary)
+  FailoverRecordPrimary:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZone
+      Name: !Sub 'failover.${DomainName}'
+      Type: A
+      SetIdentifier: primary
+      Failover: PRIMARY
+      HealthCheckId: !Ref USEast1HealthCheck
+      AliasTarget:
+        HostedZoneId: Z35SXDOTRQ7X7K
+        DNSName: !Ref USEast1LoadBalancer
+        EvaluateTargetHealth: true
+
+  FailoverRecordSecondary:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZone
+      Name: !Sub 'failover.${DomainName}'
+      Type: A
+      SetIdentifier: secondary
+      Failover: SECONDARY
+      HealthCheckId: !Ref EUWest1HealthCheck
+      AliasTarget:
+        HostedZoneId: Z32O12XQLNTSW2
+        DNSName: !Ref EUWest1LoadBalancer
+        EvaluateTargetHealth: true
+
+  # CloudWatch Alarm for Health Check
+  USEast1HealthCheckAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: route53-health-check-us-east-1
+      AlarmDescription: Alert when US-East-1 health check fails
+      MetricName: HealthCheckStatus
+      Namespace: AWS/Route53
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+      - Name: HealthCheckId
+        Value: !Ref USEast1HealthCheck
+      TreatMissingData: breaching
+
+Outputs:
+  HostedZoneId:
+    Description: Route53 Hosted Zone ID
+    Value: !Ref HostedZone
+    Export:
+      Name: !Sub '${AWS::StackName}-HostedZoneId'
+  
+  LatencyBasedEndpoint:
+    Description: Latency-based routing endpoint
+    Value: !Sub 'api.${DomainName}'
+  
+  WeightedEndpoint:
+    Description: Weighted routing endpoint for blue-green deployments
+    Value: !Sub 'app.${DomainName}'
+  
+  GeolocationEndpoint:
+    Description: Geolocation-based routing endpoint
+    Value: !Sub 'geo.${DomainName}'
+  
+  FailoverEndpoint:
+    Description: Failover routing endpoint
+    Value: !Sub 'failover.${DomainName}'
+
+---
+# ConfigMap - Route53 Strategy Guide
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: route53-strategy-guide
+  namespace: kube-system
+data:
+  guide.md: |
+    # Route53 Multi-Region Strategy Guide
+    
+    ## Routing Policies Comparison
+    
+    | Policy | Use Case | Failover | Traffic Distribution |
+    |--------|----------|----------|---------------------|
+    | **Latency** | Global users | Yes (health checks) | Based on network latency |
+    | **Geolocation** | Data residency, compliance | Yes | Based on user location |
+    | **Weighted** | Blue-green, canary | Yes | Based on weights (%) |
+    | **Failover** | DR, active-passive | Yes | Primary/secondary |
+    | **Multivalue** | Simple load balancing | Yes | Random selection |
+    
+    ## Strategy Selection
+    
+    ### Latency-Based (Recommended for Global Apps)
+    
+    **Best for**: SaaS, e-commerce, APIs with global users
+    
+    **How it works**:
+    - User in New York → US-East-1 (lowest latency)
+    - User in London → EU-West-1 (lowest latency)
+    - User in Singapore → AP-Southeast-1 (lowest latency)
+    
+    **Failover**: If US-East-1 fails, NY users go to EU-West-1
+    
+    **Configuration**:
+    ```yaml
+    Type: A
+    SetIdentifier: us-east-1
+    Region: us-east-1
+    HealthCheckId: !Ref USEast1HealthCheck
+    ```
+    
+    ### Geolocation (Compliance/Legal)
+    
+    **Best for**: GDPR, data residency requirements
+    
+    **How it works**:
+    - EU users → MUST use EU-West-1 (data stays in EU)
+    - US users → US-East-1
+    - Asia users → AP-Southeast-1
+    
+    **Configuration**:
+    ```yaml
+    GeoLocation:
+      ContinentCode: EU  # or CountryCode: DE
+    ```
+    
+    ### Weighted (Blue-Green Deployment)
+    
+    **Best for**: Gradual rollouts, A/B testing
+    
+    **Example Rollout**:
+    1. Old version: 100%, New version: 0%
+    2. Old version: 90%, New version: 10% (canary)
+    3. Old version: 50%, New version: 50%
+    4. Old version: 0%, New version: 100% (complete)
+    
+    **Configuration**:
+    ```yaml
+    Weight: 90  # 90% traffic to old version
+    ```
+    
+    ### Failover (Primary-Secondary)
+    
+    **Best for**: Active-passive DR setup
+    
+    **How it works**:
+    - Primary: US-East-1 (handles 100% traffic)
+    - Secondary: EU-West-1 (standby, only if primary fails)
+    
+    **Configuration**:
+    ```yaml
+    Failover: PRIMARY  # or SECONDARY
+    ```
+    
+    ## Health Check Configuration
+    
+    ### HTTP/HTTPS Health Check
+    ```json
+    {
+      "Type": "HTTPS",
+      "ResourcePath": "/health",
+      "Port": 443,
+      "RequestInterval": 30,
+      "FailureThreshold": 3
+    }
+    ```
+    
+    **Recommendation**:
+    - `RequestInterval`: 30 seconds (standard)
+    - `FailureThreshold`: 3 (90 seconds to failover)
+    - Fast failover: 10s interval, 2 threshold = 20s
+    
+    ### Calculated Health Check
+    Monitor multiple endpoints, failover if any fails
+    
+    ```json
+    {
+      "Type": "CALCULATED",
+      "ChildHealthChecks": [
+        "health-check-id-1",
+        "health-check-id-2",
+        "health-check-id-3"
+      ],
+      "HealthThreshold": 2  # 2 out of 3 must be healthy
+    }
+    ```
+    
+    ## Multi-Region Traffic Patterns
+    
+    ### Pattern 1: Global Active-Active
+    ```
+    Users → Route53 Latency Routing
+    ├── US-East-1 (33% traffic)
+    ├── EU-West-1 (33% traffic)
+    └── AP-Southeast-1 (34% traffic)
+    ```
+    
+    **Cost**: 3 full regions
+    **Availability**: 99.99%
+    **Complexity**: High (data synchronization)
+    
+    ### Pattern 2: Primary + DR
+    ```
+    Users → Route53 Failover
+    ├── PRIMARY: US-East-1 (100% traffic)
+    └── SECONDARY: EU-West-1 (0% traffic, hot standby)
+    ```
+    
+    **Cost**: 1 full + 1 minimal region
+    **Availability**: 99.95%
+    **Complexity**: Medium
+    
+    ### Pattern 3: Regional with Global Failover
+    ```
+    US Users → US-East-1
+    EU Users → EU-West-1 (with US-East-1 failover)
+    Asia Users → AP-Southeast-1 (with US-East-1 failover)
+    ```
+    
+    **Cost**: 2-3 regions
+    **Availability**: 99.98%
+    **Complexity**: Medium
+    
+    ## DNS Failover Testing
+    
+    ### Test Health Check
+    ```bash
+    # Get health check status
+    aws route53 get-health-check-status \
+      --health-check-id abc123 \
+      --query 'HealthCheckObservations[*].[Region,StatusReport.Status]' \
+      --output table
+    ```
+    
+    ### Simulate Regional Failure
+    ```bash
+    # Mark region as unhealthy (testing only!)
+    aws route53 update-health-check \
+      --health-check-id abc123 \
+      --disabled
+    
+    # Test DNS resolution
+    dig api.myapp.com
+    
+    # Re-enable
+    aws route53 update-health-check \
+      --health-check-id abc123 \
+      --no-disabled
+    ```
+    
+    ### Monitor Failover Events
+    ```bash
+    # CloudWatch Logs Insights query
+    fields @timestamp, @message
+    | filter @message like /health check/
+    | sort @timestamp desc
+    ```
+    
+    ## Cost Optimization
+    
+    ### Health Check Costs
+    - Standard health check: $0.50/month
+    - Fast interval (< 30s): $1.00/month
+    - HTTPS health check: No extra cost
+    - Calculated health check: $2.00/month
+    
+    **Optimization**:
+    - Use standard 30s interval (sufficient for most)
+    - Calculated checks only for critical paths
+    - Reuse health checks across records
+    
+    ### Query Costs
+    - Standard queries: $0.40 per million
+    - Latency-based: $0.60 per million
+    - Geolocation: $0.70 per million
+    
+    **Example**: 100M queries/month
+    - Standard routing: $40
+    - Latency-based: $60
+    - Extra cost: $20/month (worth it for performance)
+    
+    ## Monitoring & Alerts
+    
+    ### CloudWatch Metrics
+    ```promql
+    # Health check status
+    aws cloudwatch get-metric-statistics \
+      --namespace AWS/Route53 \
+      --metric-name HealthCheckStatus \
+      --dimensions Name=HealthCheckId,Value=abc123 \
+      --start-time 2024-01-01T00:00:00Z \
+      --end-time 2024-01-31T23:59:59Z \
+      --period 3600 \
+      --statistics Average
+    ```
+    
+    ### Recommended Alarms
+    1. Health check failure
+    2. High health check latency
+    3. Unexpected traffic shifts between regions
+    
+    ## Best Practices
+    
+    1. **Use latency-based for global users**
+       - Best user experience
+       - Automatic failover
+    
+    2. **Set up health checks correctly**
+       - Test against /health endpoint
+       - Include dependencies (DB, cache) in health check
+       - Use HTTPS for security
+    
+    3. **Test failover regularly**
+       - Monthly DR drills
+       - Verify DNS propagation time
+       - Check application behavior during failover
+    
+    4. **Monitor DNS query patterns**
+       - Understand traffic distribution
+       - Identify unexpected shifts
+       - Optimize costs
+    
+    5. **Consider TTL carefully**
+       - Lower TTL = Faster failover, higher cost
+       - Higher TTL = Slower failover, lower cost
+       - Recommended: 60 seconds for production
+    
+    6. **Use alias records for AWS resources**
+       - Free queries (no charge)
+       - Better integration
+       - Automatic updates
+

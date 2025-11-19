@@ -1,0 +1,347 @@
+---
+# KEDA ScaledObject - Kafka Consumer Lag
+#
+# Event-driven autoscaling based on Kafka consumer group lag
+# Scales pods based on number of messages waiting to be processed
+#
+# Use case: High-throughput event processing, stream processing
+
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: kafka-consumer-scaler
+  namespace: production
+  labels:
+    app: kafka-consumer
+spec:
+  # Target deployment
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: kafka-consumer
+  
+  # Polling interval - how often KEDA checks metrics
+  pollingInterval: 30  # seconds
+  
+  # Cooldown period after last trigger reported active
+  cooldownPeriod: 300  # 5 minutes
+  
+  # Idle replica count (when no messages)
+  minReplicaCount: 2   # Keep 2 pods running for quick response
+  maxReplicaCount: 50  # Maximum scale
+  
+  # Fallback behavior when metrics unavailable
+  fallback:
+    failureThreshold: 3
+    replicas: 5  # Safe fallback replica count
+  
+  # Advanced scaling policies
+  advanced:
+    # Restore original replica count after ScaledObject deletion
+    restoreToOriginalReplicaCount: true
+    
+    # Horizontal Pod Autoscaler behavior override
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          policies:
+          - type: Percent
+            value: 50
+            periodSeconds: 60
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          policies:
+          - type: Percent
+            value: 100
+            periodSeconds: 15
+  
+  triggers:
+  # Kafka consumer lag trigger
+  - type: kafka
+    metadata:
+      # Kafka bootstrap servers
+      bootstrapServers: kafka-broker-1:9092,kafka-broker-2:9092,kafka-broker-3:9092
+      
+      # Consumer group to monitor
+      consumerGroup: myapp-consumer-group
+      
+      # Topic to monitor
+      topic: events
+      
+      # Lag threshold - scale up when lag > threshold per pod
+      lagThreshold: "100"  # 100 messages per pod
+      
+      # Offset reset policy
+      offsetResetPolicy: latest
+      
+      # Allow idle consumers
+      allowIdleConsumers: "false"
+      
+      # Partition limitation (optional)
+      # partitionLimitation: "1,2,3,4"
+      
+      # Exclude persistent lag (optional)
+      excludePersistentLag: "false"
+    
+    # Authentication (from TriggerAuthentication)
+    authenticationRef:
+      name: kafka-auth
+
+---
+# KEDA ScaledObject - Kafka Multi-Topic
+# Scale based on lag across multiple topics
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: kafka-multi-topic-scaler
+  namespace: production
+spec:
+  scaleTargetRef:
+    name: multi-topic-consumer
+  
+  minReplicaCount: 2
+  maxReplicaCount: 30
+  
+  triggers:
+  # Topic 1: High priority events
+  - type: kafka
+    metadata:
+      bootstrapServers: kafka:9092
+      consumerGroup: myapp-consumer
+      topic: high-priority-events
+      lagThreshold: "50"  # More aggressive scaling
+    authenticationRef:
+      name: kafka-auth
+  
+  # Topic 2: Normal priority events
+  - type: kafka
+    metadata:
+      bootstrapServers: kafka:9092
+      consumerGroup: myapp-consumer
+      topic: events
+      lagThreshold: "200"  # Less aggressive
+    authenticationRef:
+      name: kafka-auth
+  
+  # Topic 3: Low priority events
+  - type: kafka
+    metadata:
+      bootstrapServers: kafka:9092
+      consumerGroup: myapp-consumer
+      topic: low-priority-events
+      lagThreshold: "500"
+    authenticationRef:
+      name: kafka-auth
+
+---
+# TriggerAuthentication - Kafka Credentials
+# Stores authentication details for Kafka connection
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: kafka-auth
+  namespace: production
+spec:
+  # SASL/PLAIN authentication
+  secretTargetRef:
+  - parameter: sasl
+    name: kafka-secrets
+    key: sasl
+  - parameter: username
+    name: kafka-secrets
+    key: username
+  - parameter: password
+    name: kafka-secrets
+    key: password
+  - parameter: tls
+    name: kafka-secrets
+    key: tls
+  - parameter: ca
+    name: kafka-secrets
+    key: ca
+  - parameter: cert
+    name: kafka-secrets
+    key: cert
+  - parameter: key
+    name: kafka-secrets
+    key: key
+
+---
+# Secret - Kafka Credentials
+# Store your actual credentials here
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kafka-secrets
+  namespace: production
+type: Opaque
+stringData:
+  sasl: "plaintext"  # or "sasl_plaintext", "sasl_ssl"
+  username: "kafka-user"
+  password: "kafka-password"
+  tls: "enable"  # enable or disable
+  ca: |
+    -----BEGIN CERTIFICATE-----
+    # CA certificate content
+    -----END CERTIFICATE-----
+  cert: |
+    -----BEGIN CERTIFICATE-----
+    # Client certificate
+    -----END CERTIFICATE-----
+  key: |
+    -----BEGIN PRIVATE KEY-----
+    # Client private key
+    -----END PRIVATE KEY-----
+
+---
+# KEDA ScaledObject - Kafka with Advanced Partitioning
+# Intelligent scaling based on partition count
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: kafka-partition-aware-scaler
+  namespace: production
+  annotations:
+    description: "Scales based on partition count and lag"
+spec:
+  scaleTargetRef:
+    name: kafka-consumer
+  
+  # Match replica count to partition count (max)
+  minReplicaCount: 3
+  maxReplicaCount: 30  # Match your topic partition count
+  
+  triggers:
+  - type: kafka
+    metadata:
+      bootstrapServers: kafka:9092
+      consumerGroup: myapp-consumer
+      topic: partitioned-events
+      
+      # Lag threshold per partition
+      lagThreshold: "100"
+      
+      # Activate scaling at this lag
+      activationLagThreshold: "10"
+      
+      # Don't exceed partition count
+      # If topic has 30 partitions, maxReplicaCount should be 30
+      # (one consumer per partition maximum)
+      
+    authenticationRef:
+      name: kafka-auth
+
+---
+# ConfigMap - Kafka KEDA Strategy Guide
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kafka-keda-guide
+  namespace: production
+data:
+  guide.md: |
+    # Kafka KEDA Scaling Strategy
+    
+    ## Lag Threshold Calculation
+    
+    ### Formula
+    ```
+    lagThreshold = (target_processing_time_seconds * messages_per_second) / desired_pod_count
+    ```
+    
+    ### Example 1: Real-time Processing
+    - Target processing time: 10 seconds
+    - Message rate: 1000 msg/s
+    - Desired pods: 10
+    - Lag threshold = (10 * 1000) / 10 = 1000 messages per pod
+    
+    ### Example 2: Batch Processing
+    - Target processing time: 60 seconds
+    - Message rate: 500 msg/s
+    - Desired pods: 5
+    - Lag threshold = (60 * 500) / 5 = 6000 messages per pod
+    
+    ## Partition Strategy
+    
+    ### Rule: maxReplicaCount ≤ partition count
+    
+    Why? Each pod = one consumer. Kafka assigns max 1 consumer per partition.
+    
+    ```yaml
+    # Topic has 20 partitions
+    maxReplicaCount: 20  # Not more than partition count
+    ```
+    
+    ### Optimal Partition Count
+    ```
+    partition_count = peak_throughput_msgs_per_sec / target_msg_processing_rate_per_consumer
+    ```
+    
+    Example:
+    - Peak throughput: 10,000 msg/s
+    - Each consumer handles: 500 msg/s
+    - Optimal partitions: 10,000 / 500 = 20 partitions
+    
+    ## Consumer Group Strategy
+    
+    ### Single Consumer Group (Scale Together)
+    ```yaml
+    consumerGroup: myapp-v1
+    ```
+    All consumers in same group = partition load balanced
+    
+    ### Multiple Consumer Groups (Independent Scaling)
+    ```yaml
+    # Service A
+    consumerGroup: service-a
+    
+    # Service B (reads same topic)
+    consumerGroup: service-b
+    ```
+    Each group scales independently, reads all messages
+    
+    ## Activation Threshold
+    
+    ```yaml
+    lagThreshold: "100"          # Scale to N pods
+    activationLagThreshold: "10" # Scale from 0 → 1 pod
+    ```
+    
+    Use `activationLagThreshold` for scale-to-zero scenarios.
+    
+    ## Troubleshooting
+    
+    ### Problem: Not scaling up despite lag
+    **Check:**
+    ```bash
+    # Verify KEDA can reach Kafka
+    kubectl logs -n keda deploy/keda-operator
+    
+    # Check ScaledObject status
+    kubectl describe scaledobject kafka-consumer-scaler -n production
+    
+    # Verify Kafka consumer group lag
+    kafka-consumer-groups.sh --bootstrap-server kafka:9092 \
+      --group myapp-consumer --describe
+    ```
+    
+    ### Problem: Scaling beyond partition count
+    **Fix:** Set `maxReplicaCount` = partition count
+    
+    ### Problem: Flapping (constant scale up/down)
+    **Fix:** Increase `cooldownPeriod` and adjust lag thresholds
+    
+    ## Monitoring
+    
+    ```bash
+    # Watch KEDA scaling decisions
+    kubectl get scaledobject -n production -w
+    
+    # Check HPA created by KEDA
+    kubectl get hpa -n production
+    
+    # View KEDA operator logs
+    kubectl logs -n keda deploy/keda-operator -f
+    ```
+

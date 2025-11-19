@@ -1,0 +1,464 @@
+---
+# Prometheus Adapter Configuration
+#
+# Exposes custom Prometheus metrics to Kubernetes custom metrics API
+# Enables HPA to scale based on custom application metrics
+#
+# This allows scaling on:
+# - HTTP request rate
+# - Queue depth
+# - Business metrics (transactions, active users)
+# - Any metric exposed to Prometheus
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-adapter-config
+  namespace: monitoring
+  labels:
+    app: prometheus-adapter
+data:
+  config.yaml: |
+    # Default configuration
+    rules:
+    
+    # Rule 1: HTTP Requests Per Second (per pod)
+    # Metric: http_requests_per_second
+    # Usage: Scale when avg requests/sec per pod exceeds threshold
+    - seriesQuery: 'http_requests_total{namespace!="",pod!=""}'
+      seriesFilters: []
+      resources:
+        overrides:
+          namespace: {resource: "namespace"}
+          pod: {resource: "pod"}
+      name:
+        matches: "^(.*)_total$"
+        as: "${1}_per_second"
+      metricsQuery: |
+        sum(rate(<<.Series>>{<<.LabelMatchers>>}[2m])) by (<<.GroupBy>>)
+    
+    # Rule 2: Active WebSocket Connections
+    # Metric: websocket_connections_active
+    - seriesQuery: 'websocket_connections{namespace!="",pod!=""}'
+      resources:
+        overrides:
+          namespace: {resource: "namespace"}
+          pod: {resource: "pod"}
+      name:
+        as: "websocket_connections_active"
+      metricsQuery: |
+        sum(<<.Series>>{<<.LabelMatchers>>}) by (<<.GroupBy>>)
+    
+    # Rule 3: Queue Depth
+    # Metric: queue_depth
+    - seriesQuery: 'queue_messages_ready{namespace!="",pod!=""}'
+      resources:
+        overrides:
+          namespace: {resource: "namespace"}
+          pod: {resource: "pod"}
+      name:
+        matches: "^queue_messages_ready$"
+        as: "queue_depth"
+      metricsQuery: |
+        sum(<<.Series>>{<<.LabelMatchers>>}) by (<<.GroupBy>>)
+    
+    # Rule 4: Database Connection Pool Usage (percentage)
+    # Metric: db_connection_pool_usage_percent
+    - seriesQuery: 'db_connections_active{namespace!="",pod!=""}'
+      resources:
+        overrides:
+          namespace: {resource: "namespace"}
+          pod: {resource: "pod"}
+      name:
+        as: "db_connection_pool_usage_percent"
+      metricsQuery: |
+        (sum(db_connections_active{<<.LabelMatchers>>}) by (<<.GroupBy>>) 
+        / 
+        sum(db_connections_max{<<.LabelMatchers>>}) by (<<.GroupBy>>)) * 100
+    
+    # Rule 5: API Response Time (P95 latency in milliseconds)
+    # Metric: http_request_duration_p95_milliseconds
+    - seriesQuery: 'http_request_duration_seconds_bucket{namespace!="",pod!=""}'
+      resources:
+        overrides:
+          namespace: {resource: "namespace"}
+          pod: {resource: "pod"}
+      name:
+        matches: "^http_request_duration_seconds_bucket$"
+        as: "http_request_duration_p95_milliseconds"
+      metricsQuery: |
+        histogram_quantile(0.95,
+          sum(rate(http_request_duration_seconds_bucket{<<.LabelMatchers>>}[5m])) by (le, <<.GroupBy>>)
+        ) * 1000
+    
+    # Rule 6: Error Rate (percentage)
+    # Metric: http_error_rate_percent
+    - seriesQuery: 'http_requests_total{namespace!="",pod!=""}'
+      resources:
+        overrides:
+          namespace: {resource: "namespace"}
+          pod: {resource: "pod"}
+      name:
+        as: "http_error_rate_percent"
+      metricsQuery: |
+        (sum(rate(http_requests_total{status=~"5..",<<.LabelMatchers>>}[5m])) by (<<.GroupBy>>)
+        /
+        sum(rate(http_requests_total{<<.LabelMatchers>>}[5m])) by (<<.GroupBy>>)) * 100
+    
+    # Rule 7: Active User Sessions
+    # Metric: active_sessions
+    - seriesQuery: 'user_sessions_active{namespace!="",pod!=""}'
+      resources:
+        overrides:
+          namespace: {resource: "namespace"}
+          pod: {resource: "pod"}
+      name:
+        as: "active_sessions"
+      metricsQuery: |
+        sum(<<.Series>>{<<.LabelMatchers>>}) by (<<.GroupBy>>)
+    
+    # Rule 8: Cache Hit Ratio
+    # Metric: cache_hit_ratio_percent
+    - seriesQuery: 'cache_requests_total{namespace!="",pod!=""}'
+      resources:
+        overrides:
+          namespace: {resource: "namespace"}
+          pod: {resource: "pod"}
+      name:
+        as: "cache_hit_ratio_percent"
+      metricsQuery: |
+        (sum(rate(cache_hits_total{<<.LabelMatchers>>}[5m])) by (<<.GroupBy>>)
+        /
+        sum(rate(cache_requests_total{<<.LabelMatchers>>}[5m])) by (<<.GroupBy>>)) * 100
+    
+    # Rule 9: Kafka Consumer Lag
+    # Metric: kafka_consumer_lag_messages
+    - seriesQuery: 'kafka_consumer_lag{namespace!="",pod!=""}'
+      resources:
+        overrides:
+          namespace: {resource: "namespace"}
+          pod: {resource: "pod"}
+      name:
+        as: "kafka_consumer_lag_messages"
+      metricsQuery: |
+        sum(<<.Series>>{<<.LabelMatchers>>}) by (<<.GroupBy>>)
+    
+    # Rule 10: Concurrent Jobs Running
+    # Metric: jobs_running_count
+    - seriesQuery: 'background_jobs_running{namespace!="",pod!=""}'
+      resources:
+        overrides:
+          namespace: {resource: "namespace"}
+          pod: {resource: "pod"}
+      name:
+        as: "jobs_running_count"
+      metricsQuery: |
+        sum(<<.Series>>{<<.LabelMatchers>>}) by (<<.GroupBy>>)
+    
+    # External metrics (cluster-wide, not per-pod)
+    externalRules:
+    
+    # External Rule 1: Total ingress requests per second
+    - seriesQuery: 'nginx_ingress_controller_requests'
+      metricsQuery: |
+        sum(rate(nginx_ingress_controller_requests{ingress="myapp-ingress"}[2m]))
+      name:
+        as: "ingress_requests_per_second"
+    
+    # External Rule 2: Total queue depth (all consumers)
+    - seriesQuery: 'rabbitmq_queue_messages'
+      metricsQuery: |
+        sum(rabbitmq_queue_messages{queue="tasks"})
+      name:
+        as: "total_queue_depth"
+    
+    # Resource rules (CPU, memory - usually handled by metrics-server)
+    resourceRules:
+      cpu:
+        containerQuery: |
+          sum(rate(container_cpu_usage_seconds_total{<<.LabelMatchers>>,container!="",pod!=""}[3m])) by (<<.GroupBy>>)
+        nodeQuery: |
+          sum(rate(container_cpu_usage_seconds_total{<<.LabelMatchers>>,id='/'}[3m])) by (<<.GroupBy>>)
+        resources:
+          overrides:
+            namespace: {resource: "namespace"}
+            pod: {resource: "pod"}
+            node: {resource: "node"}
+        containerLabel: container
+      memory:
+        containerQuery: |
+          sum(container_memory_working_set_bytes{<<.LabelMatchers>>,container!="",pod!=""}) by (<<.GroupBy>>)
+        nodeQuery: |
+          sum(container_memory_working_set_bytes{<<.LabelMatchers>>,id='/'}) by (<<.GroupBy>>)
+        resources:
+          overrides:
+            namespace: {resource: "namespace"}
+            pod: {resource: "pod"}
+            node: {resource: "node"}
+        containerLabel: container
+      window: 3m
+
+---
+# Prometheus Adapter Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus-adapter
+  namespace: monitoring
+  labels:
+    app: prometheus-adapter
+spec:
+  replicas: 2  # HA deployment
+  selector:
+    matchLabels:
+      app: prometheus-adapter
+  template:
+    metadata:
+      labels:
+        app: prometheus-adapter
+    spec:
+      serviceAccountName: prometheus-adapter
+      containers:
+      - name: prometheus-adapter
+        image: registry.k8s.io/prometheus-adapter/prometheus-adapter:v0.11.1
+        args:
+        - --cert-dir=/var/run/serving-cert
+        - --config=/etc/adapter/config.yaml
+        - --logtostderr=true
+        - --metrics-relist-interval=1m
+        - --prometheus-url=http://prometheus-server.monitoring.svc:9090
+        - --secure-port=6443
+        - --tls-cipher-suites=TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256,TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA,TLS_RSA_WITH_AES_128_GCM_SHA256,TLS_RSA_WITH_AES_256_GCM_SHA384,TLS_RSA_WITH_AES_128_CBC_SHA,TLS_RSA_WITH_AES_256_CBC_SHA
+        ports:
+        - containerPort: 6443
+          name: https
+        - containerPort: 8080
+          name: http
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: https
+            scheme: HTTPS
+          initialDelaySeconds: 30
+          timeoutSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: https
+            scheme: HTTPS
+          initialDelaySeconds: 30
+          timeoutSeconds: 5
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 10001
+        volumeMounts:
+        - name: tmpfs
+          mountPath: /tmp
+        - name: config
+          mountPath: /etc/adapter
+          readOnly: true
+      volumes:
+      - name: tmpfs
+        emptyDir: {}
+      - name: config
+        configMap:
+          name: prometheus-adapter-config
+
+---
+# Service for Prometheus Adapter
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus-adapter
+  namespace: monitoring
+spec:
+  ports:
+  - name: https
+    port: 443
+    targetPort: 6443
+  selector:
+    app: prometheus-adapter
+
+---
+# ServiceAccount
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus-adapter
+  namespace: monitoring
+
+---
+# ClusterRole for Prometheus Adapter
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus-adapter
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  - namespaces
+  - pods
+  - services
+  verbs:
+  - get
+  - list
+  - watch
+
+---
+# ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus-adapter
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus-adapter
+subjects:
+- kind: ServiceAccount
+  name: prometheus-adapter
+  namespace: monitoring
+
+---
+# APIService registration for custom metrics
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1beta1.custom.metrics.k8s.io
+spec:
+  service:
+    name: prometheus-adapter
+    namespace: monitoring
+  group: custom.metrics.k8s.io
+  version: v1beta1
+  insecureSkipTLSVerify: true
+  groupPriorityMinimum: 100
+  versionPriority: 100
+
+---
+# APIService registration for external metrics
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1beta1.external.metrics.k8s.io
+spec:
+  service:
+    name: prometheus-adapter
+    namespace: monitoring
+  group: external.metrics.k8s.io
+  version: v1beta1
+  insecureSkipTLSVerify: true
+  groupPriorityMinimum: 100
+  versionPriority: 100
+
+---
+# ConfigMap - Testing and Verification Guide
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-adapter-guide
+  namespace: monitoring
+data:
+  guide.md: |
+    # Prometheus Adapter Testing Guide
+    
+    ## Verify Installation
+    
+    ```bash
+    # Check adapter pods
+    kubectl get pods -n monitoring -l app=prometheus-adapter
+    
+    # Check API service registration
+    kubectl get apiservice | grep metrics
+    ```
+    
+    ## Test Custom Metrics API
+    
+    ```bash
+    # List all available custom metrics
+    kubectl get --raw /apis/custom.metrics.k8s.io/v1beta1 | jq .
+    
+    # Get specific metric for all pods
+    kubectl get --raw "/apis/custom.metrics.k8s.io/v1beta1/namespaces/production/pods/*/http_requests_per_second" | jq .
+    
+    # Get metric for specific pod
+    kubectl get --raw "/apis/custom.metrics.k8s.io/v1beta1/namespaces/production/pods/myapp-xyz/http_requests_per_second" | jq .
+    ```
+    
+    ## Test External Metrics API
+    
+    ```bash
+    # List external metrics
+    kubectl get --raw /apis/external.metrics.k8s.io/v1beta1 | jq .
+    
+    # Get specific external metric
+    kubectl get --raw "/apis/external.metrics.k8s.io/v1beta1/namespaces/production/ingress_requests_per_second" | jq .
+    ```
+    
+    ## Debug Missing Metrics
+    
+    ### Check Prometheus Query
+    ```bash
+    # Test query directly in Prometheus
+    curl -G 'http://prometheus:9090/api/v1/query' \
+      --data-urlencode 'query=rate(http_requests_total{namespace="production"}[2m])'
+    ```
+    
+    ### Check Adapter Logs
+    ```bash
+    kubectl logs -n monitoring -l app=prometheus-adapter
+    ```
+    
+    ### Check Adapter Config
+    ```bash
+    kubectl get configmap prometheus-adapter-config -n monitoring -o yaml
+    ```
+    
+    ## Common Issues
+    
+    ### Metric Not Appearing
+    1. Verify metric exists in Prometheus
+    2. Check seriesQuery matches your labels
+    3. Ensure pod/namespace labels are present
+    4. Check adapter logs for errors
+    
+    ### Metric Value Incorrect
+    1. Test PromQL query in Prometheus UI
+    2. Verify time windows ([2m], [5m])
+    3. Check rate() vs sum() usage
+    
+    ## Example HPA Using Custom Metrics
+    
+    ```yaml
+    apiVersion: autoscaling/v2
+    kind: HorizontalPodAutoscaler
+    metadata:
+      name: custom-metrics-hpa
+    spec:
+      scaleTargetRef:
+        apiVersion: apps/v1
+        kind: Deployment
+        name: myapp
+      minReplicas: 3
+      maxReplicas: 20
+      metrics:
+      - type: Pods
+        pods:
+          metric:
+            name: http_requests_per_second
+          target:
+            type: AverageValue
+            averageValue: "1000"
+    ```
+
