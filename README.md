@@ -1,26 +1,18 @@
-# Kubernetes Optimization Suite 🚀
+# Kubernetes optimization suite
 
-> **Enterprise-grade Kubernetes resource optimization, autoscaling, and multi-region deployment framework**
+Manifests and notes from tuning K8s clusters — autoscaling, spot nodes, rightsizing, multi-region patterns. Collected over a few client projects, not a product.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Kubernetes](https://img.shields.io/badge/Kubernetes-1.28+-blue.svg)](https://kubernetes.io/)
-[![Production Ready](https://img.shields.io/badge/Production-Ready-green.svg)]()
+## What's here
 
-## 📋 Overview
+- Deployments with sensible resource requests/limits
+- HPA v2 and KEDA scalers (Kafka, SQS, cron, Prometheus)
+- Spot vs on-demand node pools, priority classes, descheduler
+- Multi-region Route53 + regional overlays
+- GitOps examples (ArgoCD, Flux)
+- Prometheus/Grafana dashboards and alert rules
+- Rightsizing scripts and load-test configs
 
-This repository contains a comprehensive, production-tested Kubernetes optimization suite designed for cost-efficient, highly-available, and auto-scaling workloads. Built from real-world experience managing multi-region Kubernetes clusters at scale.
-
-### What's Included
-
-- ✅ **Complete K8s Manifests**: Right-sized deployments, services, ingress with best practices
-- ✅ **Advanced Autoscaling**: HPA (v2), KEDA with predictive scaling, custom metrics
-- ✅ **Cost Optimization**: Spot/On-Demand orchestration, bin-packing strategies
-- ✅ **High Availability**: PodDisruptionBudgets, topology spread, multi-region failover
-- ✅ **Observability Stack**: Prometheus, Grafana dashboards, alerting rules
-- ✅ **GitOps Ready**: ArgoCD and Flux configurations
-- ✅ **Multi-Region**: Active-active architecture with latency-based routing
-
-## 🏗️ Architecture
+## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -243,21 +235,7 @@ Zero-downtime disaster recovery:
 - Synchronized deployments via GitOps
 - Automatic failover in < 30 seconds
 
-## 📈 Performance Benchmarks
-
-Real-world results from production deployments:
-
-| Metric | Before Optimization | After Optimization | Improvement |
-|--------|--------------------|--------------------|-------------|
-| Monthly Compute Cost | $12,000 | $4,200 | **65% reduction** |
-| P95 Latency | 450ms | 180ms | **60% faster** |
-| Pod Startup Time | 45s | 8s | **82% faster** |
-| Resource Utilization | 23% | 68% | **3x better** |
-| Availability (SLA) | 99.5% | 99.95% | **10x fewer outages** |
-
-## 🔧 Right-Sizing Methodology
-
-Follow our proven 4-step process:
+## Right-sizing approach
 
 ### Step 1: Measure Current Usage
 
@@ -329,24 +307,9 @@ aws route53 change-resource-record-sets \
 - [Disaster Recovery Runbook](docs/disaster-recovery.md)
 - [Troubleshooting Guide](docs/troubleshooting.md)
 
-## 🤝 Contributing
+## Author
 
-This is a portfolio project, but I welcome feedback and suggestions! Feel free to:
-- Open issues for bugs or improvements
-- Submit PRs with enhancements
-- Star ⭐ the repo if you find it useful
+**Mamoon Idrees** — [LinkedIn](https://www.linkedin.com/in/mamoon-idrees) · mamoon.idrees5@gmail.com
 
-## 📄 License
-
-MIT License - feel free to use this in your own projects.
-
-## 👤 Author
-
-**Mamoon Idrees**
-- LinkedIn: [https://www.linkedin.com/in/mamoon-idrees/)
-- Email: mamoon.idrees5@gmail.com
-
----
-
-**Built with ❤️ for the Kubernetes community**
+MIT License.
 
